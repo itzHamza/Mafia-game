@@ -1,7 +1,20 @@
 {
+  "name": "mafia-bot-telegram",
+  "version": "1.0.0",
+  "description": "Telegram port of the Mafiaville Mafia party game bot",
+  "main": "bot.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
   "dependencies": {
-    "@discordjs/opus": "^0.5.0",
-    "audio-mixer": "github:Meachamp/Audio-Mixer#dee6d7601d6c389477e95c7246e9d5401f6a572a",
-    "discord.js": "github:discordjs/discord.js#63ff6a07ebcba7e9134e3902e338e8dc6564ee63"
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
   }
 }

@@ -5,3 +5,6 @@ package-lock.json
 mongocode.js
 package_temp.json
 commands/vc.js
+
+
+.env
