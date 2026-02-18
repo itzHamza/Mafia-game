@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@discordjs/opus": "^0.5.0",
+    "audio-mixer": "github:Meachamp/Audio-Mixer#dee6d7601d6c389477e95c7246e9d5401f6a572a",
+    "discord.js": "github:discordjs/discord.js#63ff6a07ebcba7e9134e3902e338e8dc6564ee63"
+  }
+}
