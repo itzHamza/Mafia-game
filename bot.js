@@ -1,302 +1,403 @@
 /**
  * bot.js
- * Entry point for the Mafiaville Telegram Mafia Bot.
  *
- * Discord.js equivalent concepts replaced here:
- *   new Discord.Client()         → new Telegraf(token)
- *   client.login(token)          → bot.launch()
- *   client.once('ready')         → bot.launch().then(...)
- *   client.on('message')         → bot.on('text') / bot.command()
- *   new Discord.Intents()        → NOT NEEDED (Telegraf has no intents)
- *   spectatorClient (voice bot)  → DROPPED (no voice API in Telegram)
- *   AudioMixer / stream          → DROPPED (no voice relay in Telegram)
- *   client.on('voiceStateUpdate') → DROPPED
+ * Entry point. Initialises Telegraf, registers all middleware,
+ * loads every command, wires all action handlers.
+ *
+ * Discord equivalent: index.js / bot.js in the Discord bot:
+ *   new Discord.Client()  → new Telegraf(token)
+ *   client.login()        → bot.launch()
+ *   client.on("message")  → bot.on("message") / bot.hears()
+ *   client.on("ready")    → bot.launch().then(...)
+ *
+ * Architecture notes:
+ *   1. gameState is a singleton — all commands and handlers share the same object.
+ *   2. Middleware runs in registration order for every incoming update.
+ *   3. Night-action callbacks are routed via actionRegistry (see roles/actionRegistry.js).
+ *   4. Day-vote callbacks are routed into NominationSession / ExecutionSession
+ *      (see roles/dayVoting.js) via receiveNominationVote / receiveExecutionVote.
+ *   5. Silenced players are blocked at the middleware level (no channel permissions
+ *      in Telegram — we gate at the bot layer instead).
  */
 
 "use strict";
 
 require("dotenv").config();
-const { Telegraf, Markup } = require("telegraf");
-const fs = require("fs");
-const path = require("path");
+
+const { Telegraf } = require("telegraf");
 const gameState = require("./gameState");
+const actionRegistry = require("./roles/actionRegistry");
+const dayVoting = require("./roles/dayVoting");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BOT INITIALISATION
-// Discord equivalent: new Discord.Client({ intents }) + client.login(token)
+// Discord equivalent: const client = new Discord.Client({ intents: [...] })
 // ─────────────────────────────────────────────────────────────────────────────
 
-if (!process.env.BOT_TOKEN) {
-  console.error("❌  BOT_TOKEN is missing. Add it to your .env file.");
+const BOT_TOKEN = process.env.BOT_TOKEN;
+if (!BOT_TOKEN) {
+  console.error("FATAL: BOT_TOKEN not set in environment / .env file.");
   process.exit(1);
 }
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
+  .split(",")
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => !isNaN(n));
+
+const bot = new Telegraf(BOT_TOKEN);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GLOBAL MIDDLEWARE
-// Discord equivalent: client.on('message') pre-processing guard
+// COMMAND LOADER
+// Discord equivalent: client.commands = new Discord.Collection(); then fs.readdirSync(...)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Logging middleware — logs every incoming update to the console.
- * Equivalent to Discord's console.log on message receipt.
- */
-bot.use(async (ctx, next) => {
-  const user = ctx.from
-    ? `${ctx.from.first_name} (id:${ctx.from.id})`
-    : "unknown";
-  const text = ctx.message?.text ?? ctx.callbackQuery?.data ?? "[non-text]";
-  console.log(`[${new Date().toISOString()}] ${user}: ${text}`);
-  return next();
-});
-
-/**
- * Group chat guard middleware.
- * Records the group chat ID the first time any command arrives from a group.
- * Discord equivalent: message.guild check + storing guild context in gamedata.
- */
-bot.use(async (ctx, next) => {
-  if (
-    ctx.chat &&
-    (ctx.chat.type === "group" || ctx.chat.type === "supergroup") &&
-    !gameState.groupChatId
-  ) {
-    gameState.groupChatId = ctx.chat.id;
-    console.log(`📌 Group chat registered: ${gameState.groupChatId}`);
-  }
-  return next();
-});
-
-/**
- * Silenced player middleware.
- * Discord equivalent: channel.updateOverwrite(user, { SEND_MESSAGES: false })
- *
- * Since Telegram bots cannot restrict individual users from sending messages,
- * we simply ignore commands from silenced players during the day phase.
- * The player's message still appears in the chat — we just don't act on it.
- */
-bot.use(async (ctx, next) => {
-  if (!ctx.from) return next();
-  const player = gameState.getPlayer(ctx.from.id);
-  if (
-    player &&
-    player.silencedThisRound &&
-    gameState.phase === "day" &&
-    ctx.chat?.type !== "private"
-  ) {
-    // Silently drop — player is silenced this round
-    return;
-  }
-  return next();
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COMMAND HANDLER LOADER
-// Discord equivalent: fs.readdirSync('./commands') + client.commands Collection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Dynamically load all command modules from the /commands directory.
- * Each command file must export: { name: string, execute: Function }
- *
- * Discord equivalent: client.commands = new Discord.Collection()
- * We use a plain Map here — no need for Discord.Collection.
- */
 const commands = new Map();
-const commandsPath = path.join(__dirname, "commands");
 
-// Only load if the commands directory exists (safe for initial scaffold)
-if (fs.existsSync(commandsPath)) {
-  const commandFiles = fs
-    .readdirSync(commandsPath)
-    .filter((file) => file.endsWith(".js"));
+const commandModules = [
+  require("./commands/join"),
+  require("./commands/leave"),
+  require("./commands/party"),
+  require("./commands/remove"),
+  require("./commands/write"),
+  require("./commands/erase"),
+  require("./commands/setup"),
+  require("./commands/startgame"),
+  require("./commands/endgame"),
+  require("./commands/kick"),
+  require("./commands/settings"),
+];
 
-  for (const file of commandFiles) {
-    const command = require(path.join(commandsPath, file));
-    if (!command.name || typeof command.execute !== "function") {
-      console.warn(`⚠️  Skipping ${file}: missing name or execute()`);
-      continue;
-    }
-    commands.set(command.name, command);
-
-    // Register the command with Telegraf so it responds to /commandName
-    // Discord equivalent: client.commands.get(command).execute(message, args, gamedata)
-    bot.command(command.name, (ctx) => {
-      // Parse args from the message text, stripping the /command prefix
-      // Discord equivalent: args = message.content.substring(prefix.length).trim().split(/ +/)
-      const rawText = ctx.message?.text ?? "";
-      const args = rawText
-        .substring(rawText.indexOf(" ") + 1)
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-
-      try {
-        command.execute(ctx, args, gameState, bot);
-      } catch (error) {
-        console.error(`Error in command /${command.name}:`, error);
-        ctx.reply("⚠️ An error occurred running that command.").catch(() => {});
-      }
-    });
-
-    console.log(`✅  Loaded command: /${command.name}`);
-  }
+for (const mod of commandModules) {
+  commands.set(mod.name, mod);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CALLBACK QUERY HANDLER (inline keyboard button presses)
-// Discord equivalent: prompt.awaitReactions(filter, { time }) + reaction events
-//
-// In Discord, role prompts used message reactions as a voting/selection UI.
-// In Telegram, we use inline keyboard buttons. Button presses fire callback
-// queries which are handled here and routed to the appropriate game handler.
-//
-// Callback data format convention (used throughout the ported role logic):
-//   "<action_namespace>:<round>:<actorId>:<payload>"
-// Example: "night_action:1:123456789:Detective"
+// MIDDLEWARE 1 — GLOBAL ERROR BOUNDARY
+// Ensures a single unhandled rejection in one update doesn't crash the bot.
+// Discord equivalent: client.on("error", ...) / process.on("unhandledRejection", ...)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── PLACEHOLDER: night action responses ──────────────────────────────────────
-// TODO (Phase 4): Route night action button presses to role handlers
-// Each role's prompt() will register a specific action namespace
-bot.action(/^night_action:/, async (ctx) => {
-  await ctx.answerCbQuery(); // Always acknowledge to remove the loading spinner
-  const data = ctx.callbackQuery.data;
-  // TODO: parse data, validate actor, record in gameState.nightActions
-  console.log(`Night action callback: ${data}`);
-});
-
-// ── PLACEHOLDER: day vote — nomination ───────────────────────────────────────
-// TODO (Phase 5): Handle nomination votes during the day phase
-bot.action(/^nominate:/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const data = ctx.callbackQuery.data;
-  // TODO: parse data, tally vote in gameState.votes, check threshold
-  console.log(`Nomination vote callback: ${data}`);
-});
-
-// ── PLACEHOLDER: day vote — guilty/innocent ──────────────────────────────────
-// TODO (Phase 5): Handle execution votes after a player is nominated
-bot.action(/^execute_vote:/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const data = ctx.callbackQuery.data;
-  // TODO: parse data, tally yay/nay, resolve execution
-  console.log(`Execution vote callback: ${data}`);
-});
-
-// ── PLACEHOLDER: mayor reveal ────────────────────────────────────────────────
-// TODO (Phase 4): Handle Mayor's decision to reveal during the night prompt
-bot.action(/^mayor_reveal:/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const data = ctx.callbackQuery.data;
-  // TODO: set gameState.mayor, push mayor-reveal to deadThisRound log
-  console.log(`Mayor reveal callback: ${data}`);
+bot.use(async (ctx, next) => {
+  try {
+    await next();
+  } catch (err) {
+    console.error("Unhandled middleware error:", err);
+    // Try to notify the chat if possible
+    if (ctx.chat) {
+      await ctx
+        .reply("⚠️ An internal error occurred. Please try again.")
+        .catch(() => {});
+    }
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DIRECT MESSAGE HANDLER
-// Discord equivalent: message.channel.type === 'dm' guard in write.js / erase.js
-//
-// In Discord, last-will commands were DM-only for secrecy.
-// We preserve this pattern — /write and /erase only work in private chats.
-// The commands themselves enforce this; this handler is just for context logging.
+// MIDDLEWARE 2 — IGNORE BOTS
+// Discord equivalent: if (message.author.bot) return;
 // ─────────────────────────────────────────────────────────────────────────────
 
-bot.on("text", async (ctx, next) => {
-  // Only log private chat non-command messages; commands are handled above
-  if (ctx.chat.type === "private" && !ctx.message.text.startsWith("/")) {
-    console.log(`DM from ${ctx.from.first_name}: ${ctx.message.text}`);
+bot.use((ctx, next) => {
+  if (ctx.from?.is_bot) return; // drop silently
+  return next();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE 3 — SILENCED PLAYER GATE (group chat only)
+// Silenced players cannot speak in the group during their silenced round.
+// Discord equivalent:
+//   Discord applied a channel permission overwrite:
+//     member.permissionOverwrites.create(channel, { SEND_MESSAGES: false })
+//   In Telegram, bots cannot restrict specific members from sending messages.
+//   Instead, we detect the message here and delete it, then notify the player.
+//
+// Only applies during the day phase (silencing takes effect the morning after).
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.use(async (ctx, next) => {
+  // Only gate text messages in group chats during the day phase
+  if (
+    ctx.chat?.type !== "private" &&
+    ctx.message?.text &&
+    gameState.phase === "day"
+  ) {
+    const player = gameState.players.get(ctx.from.id);
+    if (player?.silencedLastRound) {
+      // Delete the message so others can't read it
+      await ctx.deleteMessage().catch(() => {});
+      // DM the silenced player to explain
+      await bot.telegram
+        .sendMessage(
+          ctx.from.id,
+          `🤫 <b>You are silenced today.</b>\n\n` +
+            `The Mafia's Silencer visited you last night. ` +
+            `You cannot speak at today's Town Hall meeting.`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+      return; // do not call next() — message is suppressed
+    }
   }
   return next();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SESSION / SCENE SETUP PLACEHOLDER
-// Discord equivalent: N/A (Discord had no built-in session; we used closures)
+// MIDDLEWARE 4 — DEAD PLAYER GATE (group chat only)
+// Dead players cannot send messages to the main game chat.
+// Discord equivalent:
+//   Dead players were moved to a "Ghost Town" voice channel and lost
+//   permission to see/write in the Town Hall text channel.
 //
-// TODO (Phase 4, if needed): Add telegraf-scenes or session middleware here
-// if role prompts require multi-step conversation flows (e.g. Jailer kill confirm).
-// Currently all prompts are handled via single inline keyboard + bot.action().
-// ─────────────────────────────────────────────────────────────────────────────
-// import { session } from 'telegraf'       ← uncomment if scenes are needed
-// import { Stage, WizardScene } from 'telegraf/scenes'
-// bot.use(session());
-// bot.use(stage.middleware());
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTILITY: Send a message to a specific chat by ID
-// Discord equivalent: message.guild.channels.resolve(id).send(embed)
-//
-// Usage: sendTo(chatId, 'Hello!') or sendTo(userId, 'Private message')
+// Same delete-and-DM approach as the silence gate.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Send a plain or HTML-formatted message to any chat or user by ID.
- * Export this for use in command/game files.
- *
- * @param {number} chatId - Telegram chat ID or user ID
- * @param {string} text   - Message text (HTML supported)
- * @param {object} [extra] - Optional Telegraf extra (e.g. inline keyboard)
- * @returns {Promise}
- */
-function sendTo(chatId, text, extra = {}) {
-  return bot.telegram.sendMessage(chatId, text, {
-    parse_mode: "HTML",
-    ...extra,
+bot.use(async (ctx, next) => {
+  if (
+    ctx.chat?.type !== "private" &&
+    ctx.message?.text &&
+    gameState.isGameActive
+  ) {
+    const player = gameState.players.get(ctx.from.id);
+    // Player is in the game but is dead
+    if (player && !player.isAlive) {
+      await ctx.deleteMessage().catch(() => {});
+      await bot.telegram
+        .sendMessage(
+          ctx.from.id,
+          `👻 <b>You are dead and cannot communicate with the living.</b>\n\n` +
+            `You may watch the game, but please don't share information ` +
+            `about your role or what you observed.`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+      return;
+    }
+  }
+  return next();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /start — PRIVATE CHAT HANDLER
+// Sent automatically when a user taps "Start" after clicking the bot's profile.
+// Required so the bot can send that user DMs (Telegram requires a user to
+// initiate a private conversation before a bot can message them).
+//
+// Discord equivalent: N/A — Discord bots can DM any guild member directly.
+// This is the biggest DM limitation in Telegram and is why /setup sends a
+// warning asking all players to tap Start first.
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.command("start", async (ctx) => {
+  if (ctx.chat.type !== "private") {
+    // /start in a group — treat as /help
+    return ctx.reply(
+      `👋 <b>Mafiaville Bot</b>\n\n` +
+        `Commands:\n` +
+        `/join — Join the lobby\n` +
+        `/leave — Leave the lobby\n` +
+        `/party — List current players\n` +
+        `/remove @player — Remove a player (host only)\n` +
+        `/kick @player — Kick mid-game (host only)\n` +
+        `/setup — Assign roles (host only)\n` +
+        `/startgame — Start the game (host only)\n` +
+        `/endgame — Force-end the game (host only)\n` +
+        `/settings — View/change settings (host only)\n` +
+        `/write <line> <text> — Edit your last will (DM only)\n` +
+        `/erase <line> — Erase a will line (DM only)`,
+      { parse_mode: "HTML" },
+    );
+  }
+
+  const userId = ctx.from.id;
+
+  await ctx.reply(
+    `✅ <b>You're all set!</b>\n\n` +
+      `I can now send you private messages during the game.\n\n` +
+      `Head back to the group chat and join with /join.`,
+    { parse_mode: "HTML" },
+  );
+
+  // If a game setup is pending and this user is in the player list,
+  // note that they've confirmed DM access (no state change needed —
+  // setup will attempt their DM again once all players have confirmed).
+  const player = gameState.players.get(userId);
+  if (player) {
+    console.log(`✅ DM confirmed: ${player.username} (${userId})`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMAND DISPATCHER
+// Routes /commandName messages to the appropriate command module.
+//
+// Discord equivalent:
+//   client.on("message", message => {
+//     if (!message.content.startsWith(prefix)) return;
+//     const commandName = ...;
+//     const command = client.commands.get(commandName);
+//     command.execute(message, args, gamedata);
+//   })
+//
+// Key differences:
+//   - Telegraf handles prefix parsing; we just hook bot.command()
+//   - We pass (ctx, args, gameState, bot) instead of (message, args, gamedata)
+//   - Commands that only work in DMs check ctx.chat.type === "private" themselves
+// ─────────────────────────────────────────────────────────────────────────────
+
+for (const [name, cmd] of commands) {
+  bot.command(name, async (ctx) => {
+    // Extract args: everything after the command name, split by whitespace
+    // Discord equivalent: args = message.content.slice(prefix.length).trim().split(/\s+/)
+    const rawText = ctx.message?.text ?? "";
+    const parts = rawText.trim().split(/\s+/);
+    // parts[0] = "/commandName" or "/commandName@BotUsername" (in groups)
+    const args = parts.slice(1);
+
+    await cmd.execute(ctx, args, gameState, bot);
   });
 }
 
-/**
- * Send a photo to any chat or user by ID.
- * Discord equivalent: embed.attachFiles(['images/x.png']).setImage(...)
- *
- * @param {number} chatId
- * @param {string} imagePath - Local file path, e.g. 'images/godfather.png'
- * @param {string} [caption]
- * @returns {Promise}
- */
-function sendImageTo(chatId, imagePath, caption = "") {
-  return bot.telegram.sendPhoto(
-    chatId,
-    { source: fs.createReadStream(imagePath) },
-    { caption, parse_mode: "HTML" },
-  );
+// ─────────────────────────────────────────────────────────────────────────────
+// NIGHT ACTION CALLBACK HANDLER  (registered before day-vote handlers)
+//
+// Handles all night-prompt button presses from every role.
+// Callback data format: "<prefix>:<round>:<actorId>:<value>"
+// Prefixes: na, na_pi1, na_mayor, na_jailer, na_jailer_day
+//
+// Discord equivalent:
+//   Each night prompt registered its own awaitReactions() closure.
+//   Here we have ONE global handler routing into the actionRegistry.
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.action(/^na/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+
+  const data = ctx.callbackQuery?.data;
+  if (!data || !ctx.from) return;
+
+  // Parse: "<prefix>:<round>:<actorId>:<value>"
+  const parts = data.split(":");
+  if (parts.length < 4) return;
+
+  const prefix = parts[0];
+  const round = parts[1];
+  const actorId = parts[2];
+  const value = parts.slice(3).join(":");
+
+  // Only the correct player can press their own buttons
+  // Discord equivalent: awaitReactions filter: tuser.id === user.id
+  if (String(ctx.from.id) !== actorId) {
+    return ctx.answerCbQuery("⚠️ This isn't your prompt.").catch(() => {});
+  }
+
+  const key = `${prefix}:${round}:${actorId}`;
+  const resolved = actionRegistry.resolve(key, value);
+
+  if (resolved) {
+    // Disable the keyboard to prevent double-presses
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+  }
+  // Stale press from a previous round — silently ignore
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAY NOMINATION VOTE HANDLER
+//
+// Callback data format: "vote_nom:<round>:<targetId>"
+// voterId comes from ctx.from.id (not the callback data).
+//
+// Discord equivalent:
+//   promptFilter = (reaction, tuser) => emojiMap.has(reaction.emoji.name) && tuser.id !== botId
+//   prompt.awaitReactions(promptFilter, { time: dayTime * 1000 })
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.action(/^vote_nom:/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+
+  if (!ctx.callbackQuery?.data || !ctx.from) return;
+
+  const parts = ctx.callbackQuery.data.split(":");
+  if (parts.length < 3) return;
+
+  const targetId = Number(parts[2]);
+  const voterId = ctx.from.id;
+
+  if (ctx.from.is_bot) return;
+
+  await dayVoting.receiveNominationVote(voterId, targetId, ctx, gameState, bot);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAY EXECUTION VOTE HANDLER
+//
+// Callback data format: "vote_exec:<round>:<nomineeId>:<choice>"
+// choice = "guilty" | "innocent"
+//
+// Discord equivalent:
+//   votingPrompt.react("✅"); votingPrompt.react("❌");
+//   votingPrompt.awaitReactions(votingFilter, { time: dayTime * 1000 })
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.action(/^vote_exec:/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+
+  if (!ctx.callbackQuery?.data || !ctx.from) return;
+
+  const parts = ctx.callbackQuery.data.split(":");
+  if (parts.length < 4) return;
+
+  const choice = parts[3]; // "guilty" | "innocent"
+  const voterId = ctx.from.id;
+
+  if (ctx.from.is_bot) return;
+
+  await dayVoting.receiveExecutionVote(voterId, choice, ctx, gameState, bot);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CATCH-ALL CALLBACK HANDLER
+// Answers any unrecognised callback queries with a generic ack to prevent
+// Telegram from showing a spinning loader on the button indefinitely.
+// Discord equivalent: N/A
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.on("callback_query", async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRACEFUL SHUTDOWN
+// Discord equivalent: client.destroy() inside process SIGINT handler.
+// Clears all pending sessions/timers so the process exits cleanly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function shutdown(signal) {
+  console.log(`\n${signal} received — shutting down…`);
+
+  actionRegistry.clear();
+  dayVoting.clearActiveSessions();
+
+  bot.stop(signal);
+  process.exit(0);
 }
 
-module.exports.sendTo = sendTo;
-module.exports.sendImageTo = sendImageTo;
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAUNCH
-// Discord equivalent: client.login(config.token)
+// Discord equivalent: client.login(token)
 // ─────────────────────────────────────────────────────────────────────────────
 
 bot
   .launch()
   .then(() => {
-    console.log("🎲 Mafiaville Bot is online and ready!");
+    console.log(`✅ Mafiaville Bot is running.`);
     console.log(
-      `📋 Loaded ${commands.size} command(s): ${[...commands.keys()].map((c) => `/${c}`).join(", ")}`,
+      `   Admin IDs: ${ADMIN_IDS.length > 0 ? ADMIN_IDS.join(", ") : "(none)"}`,
     );
   })
   .catch((err) => {
-    console.error("❌ Failed to launch bot:", err);
+    console.error("Fatal: failed to launch bot:", err);
     process.exit(1);
   });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GRACEFUL SHUTDOWN
-// Discord equivalent: N/A (Discord bots just killed the process)
-// Telegraf provides bot.stop() which cleanly closes the polling connection.
-// ─────────────────────────────────────────────────────────────────────────────
-
-process.once("SIGINT", () => {
-  console.log("\n🛑 SIGINT received — shutting down gracefully...");
-  bot.stop("SIGINT");
-});
-
-process.once("SIGTERM", () => {
-  console.log("\n🛑 SIGTERM received — shutting down gracefully...");
-  bot.stop("SIGTERM");
-});

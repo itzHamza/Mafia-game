@@ -1,20 +1,17 @@
 {
   "name": "mafia-bot-telegram",
   "version": "1.0.0",
-  "description": "Telegram port of the Mafiaville Mafia party game bot",
+  "description": "Mafiaville Mafia party game bot ported from Discord to Telegram.",
   "main": "bot.js",
+  "scripts": {
+    "start":   "node bot.js",
+    "dev":     "node --watch bot.js"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
-  "scripts": {
-    "start": "node bot.js",
-    "dev": "node --watch bot.js"
-  },
   "dependencies": {
-    "telegraf": "^4.16.3",
-    "dotenv": "^16.4.5"
-  },
-  "devDependencies": {
-    "eslint": "^8.57.0"
+    "dotenv":   "^16.4.5",
+    "telegraf": "^4.16.3"
   }
 }
