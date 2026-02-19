@@ -353,11 +353,21 @@ async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {
       console.error(
         `Launch attempt ${attempt}/${maxRetries} failed: ${err.message}`,
       );
-      if (attempt < maxRetries) {
-        console.log(
-          `Retrying in ${delayMs / 1000}s… ` +
-            `(if another instance is running, this gives it time to release the connection)`,
+
+      // 409 = another instance is actively holding the long-poll connection.
+      // Retrying immediately just makes two instances fight each other.
+      // Exit with code 1 so the process manager (e.g. Railway, PM2) can restart
+      // cleanly — by which point the old instance will have released the connection.
+      if (err.response?.error_code === 409 || err.message?.includes("409")) {
+        console.error(
+          "409 Conflict: another bot instance is running. " +
+            "Exiting so the process manager can restart us cleanly.",
         );
+        process.exit(1);
+      }
+
+      if (attempt < maxRetries) {
+        console.log(`Retrying in ${delayMs / 1000}s…`);
         await new Promise((r) => setTimeout(r, delayMs));
       } else {
         console.error("Fatal: all launch attempts failed. Exiting.");
