@@ -84,12 +84,13 @@ module.exports = {
     gameState.userIds.set(userId, ctx.from.first_name);
 
     // ── Reply ────────────────────────────────────────────────────────────
-    // Discord equivalent: new Discord.MessageEmbed().setTitle(...).setDescription(...)
-    // Telegram uses HTML-formatted plain text instead of rich embeds.
+    // BUG FIX: { parse_mode: "HTML" } was being concatenated into the string
+    // (producing "[object Object]") instead of passed as the second argument.
+    // This caused all HTML tags like <b> to render as raw text.
     const hostNote = isHost ? "\n👑 You are the <b>Host</b>." : "";
     ctx.reply(
       `🃏 <b>${ctx.from.first_name}</b> has joined the game!${hostNote}\n` +
-        `👥 Party size: <b>${gameState.players.size}</b>\n\n` +
+        `👥 Party size: <b>${gameState.players.size}</b>`,
       { parse_mode: "HTML" },
     );
   },
