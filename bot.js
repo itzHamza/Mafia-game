@@ -83,27 +83,115 @@ bot.use((ctx, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MIDDLEWARE 3 — SILENCED PLAYER GATE (group chat only)
+// DM NOTIFICATION RATE LIMITER
+//
+// All three message-gate middlewares below DM the player to explain why their
+// message was deleted. Without a cooldown, a player who taps "send" repeatedly
+// receives one DM per message — easily 10+ identical DMs in a row.
+//
+// _muteNotifiedAt tracks the last time we sent a gate-DM to each user.
+// shouldNotify() returns true at most once every 30 seconds per user.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _muteNotifiedAt = new Map(); // userId (number) → Date.now() timestamp
+const MUTE_DM_COOLDOWN_MS = 30_000; // 30 seconds between repeated notices
+
+function shouldNotify(userId) {
+  const last = _muteNotifiedAt.get(userId) ?? 0;
+  if (Date.now() - last > MUTE_DM_COOLDOWN_MS) {
+    _muteNotifiedAt.set(userId, Date.now());
+    return true;
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IS GROUP MESSAGE helper
+//
+// The original gates only checked ctx.message?.text — this let stickers,
+// photos, voice messages, etc. through unchecked during night/day restrictions.
+// isGroupMessage() returns true for ANY non-command content in a group/supergroup.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isGroupMessage(ctx) {
+  const type = ctx.chat?.type;
+  if (type !== "group" && type !== "supergroup") return false;
+  if (!ctx.message) return false;
+
+  // Commands (/join, /party, etc.) must always pass through so the game works.
+  // A message is a command if its first entity is of type "bot_command".
+  const firstEntity = ctx.message.entities?.[0];
+  if (firstEntity?.type === "bot_command" && firstEntity.offset === 0) {
+    return false;
+  }
+
+  return true; // text, sticker, photo, video, voice, audio, document, poll, …
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE 3 — NIGHT PHASE GATE (group chat only)
+//
+// During night ALL players must communicate via DM only. Nobody should be
+// able to post anything in the group — alive or dead, in-game or spectator.
+//
+// Previously this gate did not exist. chatPermissions.muteAll() was supposed
+// to cover it via restrictChatMember(), but that API call requires the bot to
+// be a group admin with "Restrict members" permission. If that permission is
+// missing the call fails silently, leaving everyone unmuted.
+//
+// This middleware is the bot-layer fallback: it catches every group message
+// during night, deletes it, and DMs the sender an explanation (rate-limited).
+// It works regardless of whether the bot has admin rights.
 // ─────────────────────────────────────────────────────────────────────────────
 
 bot.use(async (ctx, next) => {
-  if (
-    ctx.chat?.type !== "private" &&
-    ctx.message?.text &&
-    gameState.phase === "day"
-  ) {
+  if (gameState.phase === "night" && isGroupMessage(ctx)) {
+    await ctx.deleteMessage().catch(() => {});
+
+    if (shouldNotify(ctx.from.id)) {
+      const player = gameState.players.get(ctx.from.id);
+      const isInGame = !!player;
+
+      const msg = isInGame
+        ? `🌙 <b>It's night — the town is asleep.</b>\n\n` +
+          `All communication happens via private message during the night phase.\n` +
+          `Check your DMs for your action prompt.`
+        : `🌙 <b>The game is in its night phase.</b>\n\n` +
+          `Group messages are disabled until morning.`;
+
+      await bot.telegram
+        .sendMessage(ctx.from.id, msg, { parse_mode: "HTML" })
+        .catch(() => {});
+    }
+    return; // do not call next()
+  }
+  return next();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE 4 — SILENCED PLAYER GATE (group chat only, day phase)
+//
+// Silenced players cannot speak at Town Hall. Their messages are deleted and
+// they receive a DM explanation (rate-limited to avoid DM spam).
+// ─────────────────────────────────────────────────────────────────────────────
+
+bot.use(async (ctx, next) => {
+  if (gameState.phase === "day" && isGroupMessage(ctx)) {
     const player = gameState.players.get(ctx.from.id);
     if (player?.silencedLastRound) {
       await ctx.deleteMessage().catch(() => {});
-      await bot.telegram
-        .sendMessage(
-          ctx.from.id,
-          `🤫 <b>You are silenced today.</b>\n\n` +
-            `The Mafia's Silencer visited you last night. ` +
-            `You cannot speak at today's Town Hall meeting.`,
-          { parse_mode: "HTML" },
-        )
-        .catch(() => {});
+
+      if (shouldNotify(ctx.from.id)) {
+        await bot.telegram
+          .sendMessage(
+            ctx.from.id,
+            `🤫 <b>You are silenced today.</b>\n\n` +
+              `The Mafia's Silencer visited you last night. ` +
+              `You cannot speak at today's Town Hall meeting.`,
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+      }
       return;
     }
   }
@@ -111,27 +199,29 @@ bot.use(async (ctx, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MIDDLEWARE 4 — DEAD PLAYER GATE (group chat only)
+// MIDDLEWARE 5 — DEAD PLAYER GATE (group chat only, any active game phase)
+//
+// Dead players cannot communicate with living players in the group.
+// Messages are deleted and they receive a DM explanation (rate-limited).
 // ─────────────────────────────────────────────────────────────────────────────
 
 bot.use(async (ctx, next) => {
-  if (
-    ctx.chat?.type !== "private" &&
-    ctx.message?.text &&
-    gameState.isGameActive
-  ) {
+  if (gameState.isGameActive && isGroupMessage(ctx)) {
     const player = gameState.players.get(ctx.from.id);
     if (player && !player.isAlive) {
       await ctx.deleteMessage().catch(() => {});
-      await bot.telegram
-        .sendMessage(
-          ctx.from.id,
-          `👻 <b>You are dead and cannot communicate with the living.</b>\n\n` +
-            `You may watch the game, but please don't share information ` +
-            `about your role or what you observed.`,
-          { parse_mode: "HTML" },
-        )
-        .catch(() => {});
+
+      if (shouldNotify(ctx.from.id)) {
+        await bot.telegram
+          .sendMessage(
+            ctx.from.id,
+            `👻 <b>You are dead and cannot communicate with the living.</b>\n\n` +
+              `You may watch the game, but please don't share information ` +
+              `about your role or what you observed.`,
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+      }
       return;
     }
   }
