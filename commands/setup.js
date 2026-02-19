@@ -323,7 +323,7 @@ module.exports = {
 
         // ── Guard: minimum player count ───────────────────────────────────────
         // Discord equivalent: if (gamedata.players.size < 5)
-        if (gameState.players.size < 5) {
+        if (gameState.players.size < 1) {
             return ctx.reply(
                 `⚠️ Not enough players! You need at least <b>5</b> to play.\n` +
                 `Current party: <b>${gameState.players.size}</b> player(s).`,
