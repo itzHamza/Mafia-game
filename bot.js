@@ -222,8 +222,8 @@ bot.command("start", async (ctx) => {
         `/startgame — Start the game (host only)\n` +
         `/endgame — Force-end the game (host only)\n` +
         `/settings — View/change settings (host only)\n` +
-        `/write <line> <text> — Edit your last will (DM only)\n` +
-        `/erase <line> — Erase a will line (DM only)`,
+        "/write &lt;line&gt; &lt;text&gt; — Edit your last will (DM only)\n" +
+        "/erase &lt;line&gt; — Erase a will line (DM only)",
       { parse_mode: "HTML" },
     );
   }

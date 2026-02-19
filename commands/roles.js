@@ -205,10 +205,18 @@ function findRole(query) {
  * @param {Object} role
  * @returns {string}
  */
+
+function esc(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function buildCaption(role) {
   return (
-    `${role.emoji} <b>${role.name}</b>  ·  <i>${role.align}</i>\n\n` +
-    `${role.description}`
+    `${role.emoji} <b>${esc(role.name)}</b>  ·  <i>${esc(role.align)}</i>\n\n` +
+    `${esc(role.description)}`
   );
 }
 
