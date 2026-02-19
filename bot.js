@@ -428,6 +428,12 @@ process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 const LAUNCH_CONFIG = {
   allowedUpdates: ["message", "callback_query", "chat_member"],
+  // BUG FIX: drop any updates that queued up while the bot was offline.
+  // Without this, Telegram delivers every button press and message from the
+  // previous session the moment the bot reconnects — flooding the handlers
+  // with stale game actions from a dead round, causing race conditions and
+  // "Cannot read properties of null" crashes in the voting session.
+  dropPendingUpdates: true,
 };
 
 async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {

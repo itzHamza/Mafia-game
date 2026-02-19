@@ -175,7 +175,15 @@ let _execSession = null;
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function receiveNominationVote(voterId, targetId, ctx, gameState, bot) {
-  if (!_nomSession) return;
+  // BUG FIX: capture session in a local variable BEFORE any await.
+  // When stale updates flood in simultaneously (e.g. after a bot restart),
+  // multiple async calls all pass the "if (!_nomSession) return" guard at the
+  // same time. The first one to resolve the session sets _nomSession = null,
+  // then the others crash trying to call null.checkThreshold().
+  // Using a local `session` variable means each call holds its own reference
+  // and the null-out of _nomSession doesn't affect calls already in flight.
+  const session = _nomSession;
+  if (!session) return;
 
   const voter = gameState.players.get(voterId);
   if (!voter || !voter.isAlive) {
@@ -190,9 +198,9 @@ async function receiveNominationVote(voterId, targetId, ctx, gameState, bot) {
     return ctx.answerCbQuery("⚠️ That player is not eligible.").catch(() => {});
   }
 
-  const prev = _nomSession.votes.get(voterId);
+  const prev = session.votes.get(voterId);
   const changed = prev !== undefined;
-  _nomSession.votes.set(voterId, targetId);
+  session.votes.set(voterId, targetId);
 
   const target = gameState.players.get(targetId);
   await ctx
@@ -203,30 +211,35 @@ async function receiveNominationVote(voterId, targetId, ctx, gameState, bot) {
     )
     .catch(() => {});
 
-  if (_nomSession.messageId) {
+  if (session.messageId) {
     await bot.telegram
       .editMessageText(
         gameState.groupChatId,
-        _nomSession.messageId,
+        session.messageId,
         undefined,
-        _nomSession.buildMessageText(),
+        session.buildMessageText(),
         {
           parse_mode: "HTML",
-          reply_markup: _buildNomKeyboard(gameState, _nomSession.round),
+          reply_markup: _buildNomKeyboard(gameState, session.round),
         },
       )
       .catch(() => {});
   }
 
-  const nominee = _nomSession.checkThreshold();
+  // Check threshold ONLY if this session is still the active one.
+  // Another concurrent call may have already resolved it.
+  if (_nomSession !== session) return;
+  const nominee = session.checkThreshold();
   if (nominee !== null) {
-    _nomSession.end(nominee);
     _nomSession = null;
+    session.end(nominee);
   }
 }
 
 async function receiveExecutionVote(voterId, choice, ctx, gameState, bot) {
-  if (!_execSession) return;
+  // BUG FIX: same race-condition fix as receiveNominationVote — capture locally.
+  const session = _execSession;
+  if (!session) return;
 
   const voter = gameState.players.get(voterId);
   if (!voter || !voter.isAlive) {
@@ -237,32 +250,30 @@ async function receiveExecutionVote(voterId, choice, ctx, gameState, bot) {
       .answerCbQuery("🤫 You were silenced and cannot vote today.")
       .catch(() => {});
   }
-  if (voterId === _execSession.nomineeId) {
+  if (voterId === session.nomineeId) {
     return ctx
       .answerCbQuery("⚠️ You cannot vote in your own trial.")
       .catch(() => {});
   }
 
-  _execSession.votes.set(voterId, choice);
+  session.votes.set(voterId, choice);
   await ctx
     .answerCbQuery(
       choice === "guilty" ? "✅ Voted guilty" : "❌ Voted innocent",
     )
     .catch(() => {});
 
-  if (_execSession.messageId) {
+  if (_execSession !== session) return;
+  if (session.messageId) {
     await bot.telegram
       .editMessageText(
         gameState.groupChatId,
-        _execSession.messageId,
+        session.messageId,
         undefined,
-        _execSession.buildMessageText(),
+        session.buildMessageText(),
         {
           parse_mode: "HTML",
-          reply_markup: _buildExecKeyboard(
-            _execSession.round,
-            _execSession.nomineeId,
-          ),
+          reply_markup: _buildExecKeyboard(session.round, session.nomineeId),
         },
       )
       .catch(() => {});
