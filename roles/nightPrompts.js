@@ -58,64 +58,69 @@ async function sendSelectionPrompt({
 
   // Build Telegram inline keyboard — one button per row for readability.
   // Discord equivalent: prompt.react(emoji) for each option.
-  const inline_keyboard = options.map((opt) => [
-    {
-      text: opt.label,
-      // callback_data format: "<key>:<value>" — parsed by bot.js action handler
-      callback_data: `${key}:${opt.value}`,
-    },
-  ]);
-
-  return new Promise(async (resolve) => {
-    let timer;
-    let sentMsgId = null;
-
-    // Register resolver BEFORE sending so there's no race condition
-    // between the message arriving and a fast button press.
-    actionRegistry.register(key, (value) => {
-      clearTimeout(timer);
-      resolve(value === "skip" ? null : value);
-    });
-
-    // Send the prompt DM
-    // Discord equivalent: user.send(embed) → saves the returned message as `prompt`
+    let inline_keyboard;
     try {
-      const sent = await bot.telegram.sendMessage(userId, text, {
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard },
-      });
-      sentMsgId = sent.message_id;
-      // Track so we can disable the keyboard on timeout
-      gameState.activeNightPrompts.set(userId, sentMsgId);
-    } catch {
-      // Most common cause: user never started a private chat with the bot.
-      // This should have been caught in /setup, but handle it gracefully.
-      actionRegistry.deregister(key);
-      return resolve(null);
+      inline_keyboard = options.map((opt) => [
+        {
+          text: opt.label,
+          callback_data: `${key}:${opt.value}`,
+        },
+      ]);
+    } catch (err) {
+      console.error("Failed to build night prompt keyboard:", err.message);
+      return null;
     }
 
-    // Night timer — mirrors Discord's awaitReactions { time: nightTime * 1000 }
-    timer = setTimeout(async () => {
-      if (!actionRegistry.has(key)) return; // already resolved by button press
-      actionRegistry.deregister(key);
+    return new Promise(async (resolve) => {
+      let timer;
+      let sentMsgId = null;
 
-      // Disable the keyboard so stale buttons can't fire next round.
-      // Discord equivalent: N/A — Discord message reactions became inert automatically.
-      if (sentMsgId) {
-        await bot.telegram
-          .editMessageReplyMarkup(userId, sentMsgId, undefined, {
-            inline_keyboard: [],
-          })
-          .catch(() => {});
+      // Register resolver BEFORE sending so there's no race condition
+      // between the message arriving and a fast button press.
+      actionRegistry.register(key, (value) => {
+        clearTimeout(timer);
+        resolve(value === "skip" ? null : value);
+      });
+
+      // Send the prompt DM
+      // Discord equivalent: user.send(embed) → saves the returned message as `prompt`
+      try {
+        const sent = await bot.telegram.sendMessage(userId, text, {
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard },
+        });
+        sentMsgId = sent.message_id;
+        // Track so we can disable the keyboard on timeout
+        gameState.activeNightPrompts.set(userId, sentMsgId);
+      } catch {
+        // Most common cause: user never started a private chat with the bot.
+        // This should have been caught in /setup, but handle it gracefully.
+        actionRegistry.deregister(key);
+        return resolve(null);
       }
 
-      await bot.telegram
-        .sendMessage(userId, "⏰ Time's up! No action taken this night.")
-        .catch(() => {});
+      // Night timer — mirrors Discord's awaitReactions { time: nightTime * 1000 }
+      timer = setTimeout(async () => {
+        if (!actionRegistry.has(key)) return; // already resolved by button press
+        actionRegistry.deregister(key);
 
-      resolve(null);
-    }, timeout * 1000);
-  });
+        // Disable the keyboard so stale buttons can't fire next round.
+        // Discord equivalent: N/A — Discord message reactions became inert automatically.
+        if (sentMsgId) {
+          await bot.telegram
+            .editMessageReplyMarkup(userId, sentMsgId, undefined, {
+              inline_keyboard: [],
+            })
+            .catch(() => {});
+        }
+
+        await bot.telegram
+          .sendMessage(userId, "⏰ Time's up! No action taken this night.")
+          .catch(() => {});
+
+        resolve(null);
+      }, timeout * 1000);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -136,6 +136,7 @@ const gameState = {
    * }
    */
   players: new Map(),
+  emojiArray: EMOJI_ARRAY,
 
   /**
    * Reverse lookup: userId (number) → username string.

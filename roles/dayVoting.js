@@ -449,9 +449,6 @@ function _buildExecKeyboard(round, nomineeId) {
  */
 async function runNominationVote(bot, gameState, round) {
   const groupChatId = gameState.groupChatId;
-
-  // Nomination threshold: ceil(alive / 2.4)
-  // Discord equivalent: Math.ceil(gamedata.game.game.playersAlive.length / 2.4)
   const threshold = Math.ceil(gameState.playersAlive.length / 2.4);
 
   return new Promise(async (resolve) => {
@@ -463,8 +460,16 @@ async function runNominationVote(bot, gameState, round) {
       resolve,
     );
 
-    // Send the nomination message to the group
-    const keyboard = _buildNomKeyboard(gameState, round);
+    // WRAP THIS ↓
+    let keyboard;
+    try {
+      keyboard = _buildNomKeyboard(gameState, round);
+    } catch (err) {
+      console.error("Failed to build nomination keyboard:", err.message);
+      _nomSession = null;
+      return resolve(null);
+    }
+
     let sent;
     try {
       sent = await bot.telegram.sendMessage(
