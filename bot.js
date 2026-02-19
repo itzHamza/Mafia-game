@@ -57,35 +57,41 @@ for (const mod of commandModules) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MIDDLEWARE 0 — STALE UPDATE GUARD
+// MIDDLEWARE 0 — STALE MESSAGE GUARD
 //
-// Telegram queues undelivered updates for up to 24 hours. Even with
-// deleteWebhook({ drop_pending_updates: true }) called on startup, there is a
-// small window where updates sent AFTER the flush but BEFORE polling starts
-// can slip through. This middleware is the last-resort safety net: it drops
-// any update whose Telegram timestamp is more than 30 seconds old.
+// Drops plain messages (/commands, text) that Telegram queued while the bot
+// was offline and delivered in a burst on reconnect.
 //
-// ctx.message?.date and ctx.callbackQuery?.message?.date are Unix timestamps
-// (seconds). We compare against Date.now() / 1000.
+// IMPORTANT — callback_queries are intentionally NOT filtered here.
+// ctx.callbackQuery.message.date is the timestamp of the *message that
+// contains the buttons*, NOT when the player pressed the button. Filtering
+// by that value would drop every legitimate vote cast more than N seconds
+// after the vote message was sent — silently killing all execution votes.
+// Stale callback_queries are already handled correctly by:
+//   - actionRegistry.resolve() returning false for unknown keys (night actions)
+//   - _nomSession / _execSession null checks (voting)
+//   - The "✅ Action recorded" / stale-alert path in bot.action(/^na/)
+//
+// For messages we compare ctx.message.date (when the user sent it) against
+// Date.now() — NOT against BOT_START_TIME. BOT_START_TIME would only drop
+// messages sent before the process started, not genuinely old queued ones
+// delivered late.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BOT_START_TIME = Math.floor(Date.now() / 1000);
-const STALE_UPDATE_THRESHOLD_S = 30;
+const STALE_MESSAGE_THRESHOLD_S = 30;
 
 bot.use((ctx, next) => {
-  // Extract the Unix timestamp from whichever update type this is
-  const ts = ctx.message?.date ?? ctx.callbackQuery?.message?.date ?? null;
+  // Only apply to plain messages — skip callback_queries entirely
+  const ts = ctx.message?.date ?? null;
 
   if (ts !== null) {
-    const ageSeconds = BOT_START_TIME - ts;
-    if (ageSeconds > STALE_UPDATE_THRESHOLD_S) {
-      // Silently drop — do NOT answer cbQuery here because answerCbQuery
-      // requires an active session; just return without calling next().
+    const ageSeconds = Math.floor(Date.now() / 1000) - ts;
+    if (ageSeconds > STALE_MESSAGE_THRESHOLD_S) {
       console.log(
-        `[stale-update] dropped update ${ageSeconds}s old ` +
-          `(from=${ctx.from?.id} type=${ctx.updateType})`,
+        `[stale-message] dropped message ${ageSeconds}s old ` +
+          `(from=${ctx.from?.id} text="${ctx.message?.text?.slice(0, 40)}")`,
       );
-      return;
+      return; // drop silently — do not call next()
     }
   }
   return next();
