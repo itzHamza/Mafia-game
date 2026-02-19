@@ -28,7 +28,6 @@ const { Telegraf } = require("telegraf");
 const gameState = require("./gameState");
 const actionRegistry = require("./roles/actionRegistry");
 const dayVoting = require("./roles/dayVoting");
-require("./commands/roles"); // ← add this
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BOT INITIALISATION
@@ -67,6 +66,7 @@ const commandModules = [
   require("./commands/endgame"),
   require("./commands/kick"),
   require("./commands/settings"),
+  require("./commands/roles"), // ← add this
 ];
 
 for (const mod of commandModules) {
