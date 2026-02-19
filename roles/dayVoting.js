@@ -152,14 +152,17 @@ class ExecutionSession {
     );
   }
 
-  end(result) {
+  end() {
+    // Always pass `this` to the callback so it can safely call .tally()
+    // without depending on the module-level _execSession variable,
+    // which may already be null by the time the callback runs.
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     const fn = this.resolve;
     this.resolve = null;
-    if (fn) fn(result);
+    if (fn) fn(this);
   }
 }
 
@@ -385,29 +388,38 @@ async function runExecutionVote(bot, gameState, round, nomineeId) {
     return { executed: false, nomineeId, yayVoters: [], nayVoters: [] };
 
   return new Promise(async (resolve) => {
+    // BUG FIX: the resolve callback must NOT reference _execSession by name.
+    // The timer does: _execSession = null  THEN  session.end(null).
+    // end() fires this callback, which tried _execSession.tally() — but
+    // _execSession was already null, causing the crash.
+    //
+    // Fix: build a self-contained callback that receives the session object
+    // as a parameter instead of closing over the module-level variable.
+    function onSessionEnd(endedSession) {
+      const { yay, nay, yayVoters, nayVoters } = endedSession.tally();
+      if (endedSession.messageId) {
+        bot.telegram
+          .editMessageReplyMarkup(
+            groupChatId,
+            endedSession.messageId,
+            undefined,
+            { inline_keyboard: [] },
+          )
+          .catch(() => {});
+      }
+      resolve({
+        executed: yay > nay,
+        nomineeId,
+        yayVoters,
+        nayVoters,
+      });
+    }
+
     _execSession = new ExecutionSession(
       round,
       nomineeId,
       gameState,
-      (result) => {
-        const { yay, nay, yayVoters, nayVoters } = _execSession.tally();
-        if (_execSession.messageId) {
-          bot.telegram
-            .editMessageReplyMarkup(
-              groupChatId,
-              _execSession.messageId,
-              undefined,
-              { inline_keyboard: [] },
-            )
-            .catch(() => {});
-        }
-        resolve({
-          executed: yay > nay,
-          nomineeId,
-          yayVoters,
-          nayVoters,
-        });
-      },
+      onSessionEnd,
     );
 
     try {
@@ -435,7 +447,7 @@ async function runExecutionVote(bot, gameState, round, nomineeId) {
       if (!_execSession) return;
       const session = _execSession;
       _execSession = null;
-      session.end(null);
+      session.end(); // end() always passes `this` to the callback
     }, gameState.settings.dayTime * 1000);
   });
 }
@@ -593,8 +605,9 @@ function clearActiveSessions() {
     _nomSession = null;
   }
   if (_execSession) {
-    _execSession.end(null);
+    const s = _execSession;
     _execSession = null;
+    s.end(); // end() passes `this`; the resolve callback will see tally() correctly
   }
 }
 

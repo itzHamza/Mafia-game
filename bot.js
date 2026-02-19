@@ -57,6 +57,41 @@ for (const mod of commandModules) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE 0 — STALE UPDATE GUARD
+//
+// Telegram queues undelivered updates for up to 24 hours. Even with
+// deleteWebhook({ drop_pending_updates: true }) called on startup, there is a
+// small window where updates sent AFTER the flush but BEFORE polling starts
+// can slip through. This middleware is the last-resort safety net: it drops
+// any update whose Telegram timestamp is more than 30 seconds old.
+//
+// ctx.message?.date and ctx.callbackQuery?.message?.date are Unix timestamps
+// (seconds). We compare against Date.now() / 1000.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BOT_START_TIME = Math.floor(Date.now() / 1000);
+const STALE_UPDATE_THRESHOLD_S = 30;
+
+bot.use((ctx, next) => {
+  // Extract the Unix timestamp from whichever update type this is
+  const ts = ctx.message?.date ?? ctx.callbackQuery?.message?.date ?? null;
+
+  if (ts !== null) {
+    const ageSeconds = BOT_START_TIME - ts;
+    if (ageSeconds > STALE_UPDATE_THRESHOLD_S) {
+      // Silently drop — do NOT answer cbQuery here because answerCbQuery
+      // requires an active session; just return without calling next().
+      console.log(
+        `[stale-update] dropped update ${ageSeconds}s old ` +
+          `(from=${ctx.from?.id} type=${ctx.updateType})`,
+      );
+      return;
+    }
+  }
+  return next();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MIDDLEWARE 1 — GLOBAL ERROR BOUNDARY
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -416,27 +451,47 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAUNCH WITH RETRY
+// LAUNCH
 //
-// BUG FIX: The original bot.launch() had no retry logic. Telegram's API
-// occasionally returns a timeout (especially if another instance is still
-// holding a long-poll connection), which caused a hard crash.
+// Step 1: deleteWebhook({ drop_pending_updates: true })
+//   This is a direct Telegram API call that flushes the server-side update
+//   queue BEFORE polling starts. It works even if a previous instance is
+//   still running, and regardless of whether bot.launch() succeeds on the
+//   first attempt.
 //
-// Fix: retry up to 5 times with a 10-second delay between attempts.
-// Each retry gives the previous instance time to release the connection.
+//   Why not rely on dropPendingUpdates in LAUNCH_CONFIG alone?
+//   Because that flag only takes effect if bot.launch() succeeds on the
+//   first try. When there's a 409 conflict or a 90s timeout on startup,
+//   Telegraf never applies the flag — but Telegram has already queued all
+//   updates, which flood in the moment polling eventually starts. This caused
+//   an entire game's worth of stale button-presses to arrive simultaneously
+//   3 minutes into a new game, triggering race conditions and crashes.
+//
+// Step 2: launchWithRetry
+//   On 409: exit immediately. The process manager restarts us, and by then
+//   the old instance will have released the connection.
+//   On timeout: retry up to 5 times with 10s delay.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LAUNCH_CONFIG = {
   allowedUpdates: ["message", "callback_query", "chat_member"],
-  // BUG FIX: drop any updates that queued up while the bot was offline.
-  // Without this, Telegram delivers every button press and message from the
-  // previous session the moment the bot reconnects — flooding the handlers
-  // with stale game actions from a dead round, causing race conditions and
-  // "Cannot read properties of null" crashes in the voting session.
-  dropPendingUpdates: true,
+  dropPendingUpdates: true, // belt-and-suspenders alongside the explicit deleteWebhook call
 };
 
+async function flushPendingUpdates() {
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    console.log("🧹 Pending updates flushed.");
+  } catch (err) {
+    // Non-fatal — polling will still work, we just might get a burst of old updates.
+    console.warn("Could not flush pending updates:", err.message);
+  }
+}
+
 async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {
+  // Always flush first, before any launch attempt.
+  await flushPendingUpdates();
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       await bot.launch(LAUNCH_CONFIG);
@@ -465,6 +520,9 @@ async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {
       if (attempt < maxRetries) {
         console.log(`Retrying in ${delayMs / 1000}s…`);
         await new Promise((r) => setTimeout(r, delayMs));
+        // Flush again before each retry in case more updates queued up
+        // during the wait period.
+        await flushPendingUpdates();
       } else {
         console.error("Fatal: all launch attempts failed. Exiting.");
         process.exit(1);
