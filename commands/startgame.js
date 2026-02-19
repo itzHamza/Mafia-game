@@ -37,6 +37,11 @@ const {
   collectJailerDay,
   clearActiveSessions,
 } = require("../roles/dayVoting");
+const {
+  muteAll,
+  updateDayPermissions,
+  unmuteAll,
+} = require("../roles/chatPermissions");
 
 const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
   .split(",")
@@ -271,6 +276,9 @@ async function nightTime(round, bot, gameState) {
       `You have <b>${gameState.settings.nightTime} seconds</b> to respond.`,
   );
 
+  // Mute the group — all night communication happens via DM
+  await muteAll(bot, groupChatId, gameState);
+
   await nightActions(round, bot, gameState);
 }
 
@@ -327,6 +335,7 @@ async function dayTime(round, bot, gameState) {
     moveAnnouncement += `\n\n🤫 <b>Absent (silenced):</b> ${silencedNames.join(", ")}`;
   }
   await toGroup(bot, groupChatId, moveAnnouncement);
+  await updateDayPermissions(bot, groupChatId, gameState);
 
   // ── Step 3: Announce night results ────────────────────────────────────────
   // Discord equivalent: the for/switch loop over deadThisRound in dayTime()
@@ -542,6 +551,7 @@ module.exports = {
     clearActiveSessions();
     actionRegistry.clear();
 
+    await unmuteAll(bot, groupChatId, gameState);
     await toGroup(bot, groupChatId, buildWinMessage(winner, extra, gameState));
 
     // Co-winner neutral announcements (e.g. Baiter co-wins with Village)

@@ -22,6 +22,7 @@
 
 const actionRegistry = require("../roles/actionRegistry");
 const { clearActiveSessions } = require("../roles/dayVoting");
+const { unmuteAll } = require("../roles/chatPermissions");
 
 const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
   .split(",")
@@ -89,6 +90,12 @@ module.exports = {
     // ── Reset ─────────────────────────────────────────────────────────────
     // Preserve the player list so they don't have to /join again.
     const prevPlayers = new Map(gameState.players);
+
+    // Restore speaking permissions before wiping state
+    if (gameState.groupChatId) {
+      await unmuteAll(bot, gameState.groupChatId, gameState);
+    }
+
     gameState.reset(prevPlayers);
 
     await bot.telegram

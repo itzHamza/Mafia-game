@@ -1080,4 +1080,4 @@ async function collectNightAction(bot, userId, round, gameState) {
   }
 }
 
-module.exports = { collectNightAction };
+module.exports = { collectNightAction, sendSelectionPrompt };

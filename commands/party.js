@@ -48,7 +48,7 @@ module.exports = {
     // ── Phase context ────────────────────────────────────────────────────
     let phaseText = "";
     if (gameState.phase === "lobby") {
-      phaseText = "\n\n🔧 Use /setup to assign roles when ready.";
+      phaseText = "\n\n🔧 Assign roles when ready.";
     } else if (gameState.phase === "night") {
       phaseText = `\n\n🌙 Round ${gameState.currentRound} — Night phase.`;
     } else if (gameState.phase === "day") {

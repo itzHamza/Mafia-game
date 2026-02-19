@@ -295,17 +295,18 @@ bot.action(/^na/, async (ctx) => {
   const data = ctx.callbackQuery?.data;
   if (!data || !ctx.from) return;
 
-  // Parse: "<prefix>:<round>:<actorId>:<value>"
   const parts = data.split(":");
-  if (parts.length < 4) return;
+  if (parts.length < 4) {
+    console.warn("[night-action] malformed callback_data:", data);
+    return;
+  }
 
   const prefix = parts[0];
   const round = parts[1];
   const actorId = parts[2];
   const value = parts.slice(3).join(":");
 
-  // Only the correct player can press their own buttons
-  // Discord equivalent: awaitReactions filter: tuser.id === user.id
+  // Guard: only the correct player can press their own buttons
   if (String(ctx.from.id) !== actorId) {
     return ctx.answerCbQuery("⚠️ This isn't your prompt.").catch(() => {});
   }
@@ -313,11 +314,11 @@ bot.action(/^na/, async (ctx) => {
   const key = `${prefix}:${round}:${actorId}`;
   const resolved = actionRegistry.resolve(key, value);
 
+  console.log(`[night-action] key=${key} value=${value} resolved=${resolved}`);
+
   if (resolved) {
-    // Disable the keyboard to prevent double-presses
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
   }
-  // Stale press from a previous round — silently ignore
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,7 +334,6 @@ bot.action(/^na/, async (ctx) => {
 
 bot.action(/^vote_nom:/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-
   if (!ctx.callbackQuery?.data || !ctx.from) return;
 
   const parts = ctx.callbackQuery.data.split(":");
@@ -344,6 +344,7 @@ bot.action(/^vote_nom:/, async (ctx) => {
 
   if (ctx.from.is_bot) return;
 
+  console.log(`[vote-nom] voterId=${voterId} targetId=${targetId}`);
   await dayVoting.receiveNominationVote(voterId, targetId, ctx, gameState, bot);
 });
 
@@ -360,19 +361,20 @@ bot.action(/^vote_nom:/, async (ctx) => {
 
 bot.action(/^vote_exec:/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-
   if (!ctx.callbackQuery?.data || !ctx.from) return;
 
   const parts = ctx.callbackQuery.data.split(":");
   if (parts.length < 4) return;
 
-  const choice = parts[3]; // "guilty" | "innocent"
+  const choice = parts[3];
   const voterId = ctx.from.id;
 
   if (ctx.from.is_bot) return;
 
+  console.log(`[vote-exec] voterId=${voterId} choice=${choice}`);
   await dayVoting.receiveExecutionVote(voterId, choice, ctx, gameState, bot);
 });
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CATCH-ALL CALLBACK HANDLER
@@ -410,7 +412,9 @@ process.once("SIGTERM", () => shutdown("SIGTERM"));
 // ─────────────────────────────────────────────────────────────────────────────
 
 bot
-  .launch()
+  .launch({
+    allowedUpdates: ["message", "callback_query", "chat_member"],
+  })
   .then(() => {
     console.log(`✅ Mafiaville Bot is running.`);
     console.log(

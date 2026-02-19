@@ -90,7 +90,6 @@ module.exports = {
     ctx.reply(
       `🃏 <b>${ctx.from.first_name}</b> has joined the game!${hostNote}\n` +
         `👥 Party size: <b>${gameState.players.size}</b>\n\n` +
-        `Use /party to see who has joined.`,
       { parse_mode: "HTML" },
     );
   },
