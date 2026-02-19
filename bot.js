@@ -402,12 +402,24 @@ bot.action(/^vote_nom:/, async (ctx) => {
   if (!ctx.callbackQuery?.data || !ctx.from) return;
 
   const parts = ctx.callbackQuery.data.split(":");
-  if (parts.length < 3) return;
+  if (parts.length < 4) return;
 
-  const targetId = Number(parts[2]);
+  const [, sessionId, , targetIdStr] = parts; // vote_nom:SESSION:ROUND:TARGETID
+  const targetId = Number(parts[3]);
   const voterId = ctx.from.id;
 
   if (ctx.from.is_bot) return;
+
+  // Reject buttons from a previous game session
+  if (sessionId !== gameState.sessionId) {
+    await ctx
+      .answerCbQuery(
+        "⚠️ This vote is from a previous game and is no longer valid.",
+        { show_alert: true },
+      )
+      .catch(() => {});
+    return;
+  }
 
   console.log(`[vote-nom] voterId=${voterId} targetId=${targetId}`);
   await dayVoting.receiveNominationVote(voterId, targetId, ctx, gameState, bot);
@@ -422,17 +434,29 @@ bot.action(/^vote_exec:/, async (ctx) => {
   if (!ctx.callbackQuery?.data || !ctx.from) return;
 
   const parts = ctx.callbackQuery.data.split(":");
-  if (parts.length < 4) return;
+  if (parts.length < 5) return;
 
-  const choice = parts[3];
+  // vote_exec:SESSION:ROUND:NOMINEEID:CHOICE
+  const sessionId = parts[1];
+  const choice = parts[4];
   const voterId = ctx.from.id;
 
   if (ctx.from.is_bot) return;
 
+  // Reject buttons from a previous game session
+  if (sessionId !== gameState.sessionId) {
+    await ctx
+      .answerCbQuery(
+        "⚠️ This vote is from a previous game and is no longer valid.",
+        { show_alert: true },
+      )
+      .catch(() => {});
+    return;
+  }
+
   console.log(`[vote-exec] voterId=${voterId} choice=${choice}`);
   await dayVoting.receiveExecutionVote(voterId, choice, ctx, gameState, bot);
 });
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CATCH-ALL CALLBACK HANDLER
 // ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +520,7 @@ async function flushPendingUpdates() {
 
 async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {
   // Always flush first, before any launch attempt.
+  await sleepAsync(5000); // give the old instance 5s to release the connection
   await flushPendingUpdates();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {

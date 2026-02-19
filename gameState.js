@@ -13,6 +13,8 @@
  */
 
 "use strict";
+// At the top, after "use strict";
+const crypto = require("crypto");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROLE STATE FACTORY
@@ -137,6 +139,7 @@ const gameState = {
    */
   players: new Map(),
   emojiArray: EMOJI_ARRAY,
+  sessionId: crypto.randomBytes(4).toString("hex"), // changes on every reset
 
   /**
    * Reverse lookup: userId (number) → username string.

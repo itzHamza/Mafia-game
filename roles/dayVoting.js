@@ -293,24 +293,24 @@ function _buildNomKeyboard(gameState, round) {
     return [
       {
         text: `${gameState.emojiArray[i]} ${p?.username ?? "?"}`,
-        callback_data: `vote_nom:${round}:${id}`,
+        callback_data: `vote_nom:${gameState.sessionId}:${round}:${id}`,
       },
     ];
   });
   return { inline_keyboard: rows };
 }
 
-function _buildExecKeyboard(round, nomineeId) {
+function _buildExecKeyboard(round, nomineeId, sessionId) {
   return {
     inline_keyboard: [
       [
         {
           text: "✅ Guilty",
-          callback_data: `vote_exec:${round}:${nomineeId}:guilty`,
+          callback_data: `vote_exec:${sessionId}:${round}:${nomineeId}:guilty`,
         },
         {
           text: "❌ Innocent",
-          callback_data: `vote_exec:${round}:${nomineeId}:innocent`,
+          callback_data: `vote_exec:${sessionId}:${round}:${nomineeId}:innocent`,
         },
       ],
     ],
