@@ -520,7 +520,6 @@ async function flushPendingUpdates() {
 
 async function launchWithRetry(maxRetries = 5, delayMs = 10_000) {
   // Always flush first, before any launch attempt.
-  await sleepAsync(5000); // give the old instance 5s to release the connection
   await flushPendingUpdates();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
