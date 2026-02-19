@@ -28,6 +28,7 @@ const { Telegraf } = require("telegraf");
 const gameState = require("./gameState");
 const actionRegistry = require("./roles/actionRegistry");
 const dayVoting = require("./roles/dayVoting");
+require("./commands/roles"); // ← add this
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BOT INITIALISATION
@@ -174,6 +175,25 @@ bot.use(async (ctx, next) => {
     }
   }
   return next();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD THESE TWO bot.command() BLOCKS ANYWHERE AFTER THE COMMAND DISPATCHER LOOP
+// (before the action handlers)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// /roles — send all 16 role cards grouped by alignment
+bot.command("roles", async (ctx) => {
+  const rolesCmd = commands.get("roles");
+  await rolesCmd.execute(ctx, [], gameState, bot, "all");
+});
+
+// /role [name] — send the card for a single named role
+bot.command("role", async (ctx) => {
+  const rawText = ctx.message?.text ?? "";
+  const args = rawText.trim().split(/\s+/).slice(1); // everything after /role
+  const rolesCmd = commands.get("roles");
+  await rolesCmd.execute(ctx, args, gameState, bot, "single");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
