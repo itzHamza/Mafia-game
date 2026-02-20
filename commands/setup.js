@@ -7,14 +7,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const {
-  ROLES,
-  MAFIA_TIERS,
-  VILLAGE_TIERS,
-  NEUTRAL_TIERS,
-  ALIGN_EMOJI,
-} = require("../roles/roleData");
-
+const { ROLES, ALIGN_EMOJI } = require("../roles/roleData");
 const IMAGES_DIR = path.join(__dirname, "..", "images");
 
 const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
@@ -25,37 +18,94 @@ const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
 const { log, warn, err } = require("../logger");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROLE PICKER
+// SHUFFLE UTILITY
 // ─────────────────────────────────────────────────────────────────────────────
 
-function pickRole(tiersClone, state) {
-  const tier = tiersClone[state.currentTier];
-  let roleName;
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
-  if (!tier) {
-    roleName =
-      state.rolePool[Math.floor(Math.random() * state.rolePool.length)];
-  } else if (!tier.pick) {
-    roleName = tier.roles[Math.floor(Math.random() * tier.roles.length)];
-    tier.roles = tier.roles.filter((r) => r !== roleName);
-    if (tier.roles.length === 0) state.currentTier++;
-  } else {
-    roleName = tier.roles[Math.floor(Math.random() * tier.roles.length)];
-    tier.roles = tier.roles.filter((r) => r !== roleName);
-    tier.pick--;
-    if (!tier.pick) state.currentTier++;
+// ─────────────────────────────────────────────────────────────────────────────
+// ROLE LIST BUILDER
+//
+// Returns an array of exactly N role-name strings following the rules:
+//
+//   N = 5  → Core 5 only (Mafioso + Doctor + Detective + Mayor + Distractor)
+//   6–8    → Core 5 + Godfather + up-to-2 random Neutrals
+//   N > 8  → Core 5 + Godfather
+//             + 1–2 random Mafia extras  (Framer / Silencer)
+//             + 1+ random Village extras (Vigilante / Jailer / PI / Spy)
+//             + remaining filled with Neutrals (prefer ≤ 2)
+//
+// Constraint: Mafia total never exceeds floor(N / 3).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildRoleList(n) {
+  const MAFIA_EXTRAS = ["Framer", "Silencer"];
+  const VILLAGE_EXTRAS = ["Vigilante", "Jailer", "PI", "Spy"];
+  const NEUTRAL_POOL = ["Jester", "Executioner", "Baiter", "Arsonist"];
+
+  // ── Core 5 (always) ──────────────────────────────────────────────────────
+  const roles = ["Mafioso", "Doctor", "Detective", "Mayor", "Distractor"];
+
+  if (n === 5) return roles;
+
+  // ── N 6–8: Godfather + optional Neutrals ─────────────────────────────────
+  roles.push("Godfather");
+
+  if (n <= 8) {
+    const neutralCount = Math.min(n - roles.length, 2);
+    roles.push(...shuffle(NEUTRAL_POOL).slice(0, neutralCount));
+    return roles;
   }
 
-  state.rolePool = state.rolePool.filter((r) => r !== roleName);
-  return roleName;
+  // ── N > 8 ────────────────────────────────────────────────────────────────
+
+  // Mafia expansion — stay under floor(N/3) cap
+  const maxMafia = Math.floor(n / 3);
+  const mafiaAdd = Math.min(MAFIA_EXTRAS.length, Math.max(0, maxMafia - 2));
+  roles.push(...shuffle(MAFIA_EXTRAS).slice(0, mafiaAdd));
+
+  // Helper: live slot count
+  const slotsLeft = () => n - roles.length;
+
+  // Village expansion — at least 1, leave room for Neutrals (prefer 2)
+  const neutralBudget = Math.min(2, slotsLeft());
+  const villageAdd = Math.max(
+    1,
+    Math.min(VILLAGE_EXTRAS.length, slotsLeft() - neutralBudget),
+  );
+  roles.push(...shuffle(VILLAGE_EXTRAS).slice(0, villageAdd));
+
+  // Neutral fill — whatever slots remain, capped to pool size
+  // (for N > 14 this may exceed 2 since we've exhausted other pools)
+  const neutralCount = Math.min(NEUTRAL_POOL.length, slotsLeft());
+  roles.push(...shuffle(NEUTRAL_POOL).slice(0, neutralCount));
+
+  return roles;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALIGNMENT MAPPER  (roleData uses Arabic; game logic uses English)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ALIGN_MAP = {
+  العصابة: "Mafia",
+  الحومة: "Village",
+  محايد: "Neutral",
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROLE CARD FORMATTER
 // ─────────────────────────────────────────────────────────────────────────────
 
 function formatRoleCard(roleName, roleInfo) {
-  const emoji = ALIGN_EMOJI[roleInfo.align] ?? "⚪";
+  const emoji = ALIGN_EMOJI[ALIGN_MAP[roleInfo.align]] ?? "⚪";
   return (
     `🎭 <b>نتا هو ${roleName.toUpperCase()}</b>\n\n` +
     `${emoji} <b>الجهة :</b> ${roleInfo.align}\n\n` +
@@ -94,7 +144,6 @@ async function sendRoleCard(bot, userId, roleName, roleInfo, playerName) {
     } else {
       await bot.telegram.sendMessage(userId, cardText, { parse_mode: "HTML" });
     }
-
     log("SETUP", `✅ ${playerName} received their role card`);
     return { success: true };
   } catch (e) {
@@ -138,6 +187,7 @@ async function sendExecutionerTargetDM(
 ) {
   const target = players.get(targetId);
   if (!target) return;
+
   const imagePath = path.join(IMAGES_DIR, "death.png");
   const msg =
     `🎯 <b>Your target is ${target.username}.</b>\n\nYour goal is to get them <b>lynched</b> by the town.\n\n` +
@@ -191,7 +241,7 @@ function rollbackSetup(gameState) {
   rs.Doctor.lastChoice = null;
   rs.Doctor.doctorId = null;
   rs.Jailer.canJail = true;
-  rs.Jailer.killsLeft = 3;
+  rs.Jailer.killsLeft = 1;
   rs.Jailer.lastSelection = null;
   rs.Jailer.previousSelection = null;
   rs.Jailer.jailerId = null;
@@ -223,14 +273,15 @@ module.exports = {
     if (ctx.chat.type === "private") {
       return ctx.reply("⚠️ This command must be used in the group chat.");
     }
-    if (gameState.players.size < 1) {
+    if (gameState.players.size < 5) {
       return ctx.reply(
         `⚠️ Not enough players! You need at least <b>5</b> to play.\nCurrent: <b>${gameState.players.size}</b>`,
         { parse_mode: "HTML" },
       );
     }
-    if (gameState.phase === "setup")
+    if (gameState.phase === "setup") {
       return ctx.reply("⏳ Setup is already in progress.");
+    }
     if (gameState.gameReady || gameState.isGameActive) {
       return ctx.reply(
         "⚠️ The game is already set up. Use /startgame to begin.",
@@ -240,8 +291,9 @@ module.exports = {
     const issuerId = ctx.from.id;
     const issuer = gameState.players.get(issuerId);
     if (!(issuer?.isHost || ADMIN_IDS.includes(issuerId))) {
-      ctx.deleteMessage().catch(() => { });
-      return;
+      return ctx.reply("⚠️ Only the 👑 <b>Host</b> can run /setup.", {
+        parse_mode: "HTML",
+      });
     }
 
     gameState.phase = "setup";
@@ -252,102 +304,66 @@ module.exports = {
       { parse_mode: "HTML" },
     );
 
-    // ── Group size calculation ────────────────────────────────────────
+    // ── Build & assign roles ────────────────────────────────────────────
     const playerCount = gameState.players.size;
-    const mafiaHidden = gameState.settings.mafiaHidden;
-    let mafiaCount, neutralCount;
 
-    if ((mafiaHidden && playerCount >= 10) || playerCount >= 13) {
-      mafiaCount = 3;
-      neutralCount = Math.round(Math.random()) + 2;
-      if (playerCount > 11) neutralCount++;
-    } else if ((mafiaHidden && playerCount >= 6) || playerCount >= 8) {
-      mafiaCount = 2;
-      neutralCount = Math.round(Math.random());
-      if (playerCount > 7) neutralCount++;
-    } else {
-      mafiaCount = 1;
-      neutralCount = 1;
+    log("SETUP", `Building role list for ${playerCount} players...`);
+    const roleList = shuffle(buildRoleList(playerCount));
+    const playerIds = shuffle(Array.from(gameState.players.keys()));
+
+    if (roleList.length !== playerCount) {
+      err(
+        "SETUP",
+        `Role list length (${roleList.length}) does not match player count (${playerCount}) — aborting`,
+      );
+      rollbackSetup(gameState);
+      return ctx.reply(
+        "❌ <b>Setup failed!</b> Role count mismatch. Please try again.",
+        { parse_mode: "HTML" },
+      );
     }
 
-    const villagerCount = playerCount - mafiaCount - neutralCount;
+    gameState.playersAlive = Array.from(gameState.players.keys());
+
+    for (let i = 0; i < playerIds.length; i++) {
+      const userId = playerIds[i];
+      const roleName = roleList[i];
+      const roleInfo = ROLES[roleName];
+      const player = gameState.players.get(userId);
+      const align = ALIGN_MAP[roleInfo.align] ?? "Neutral";
+
+      player.role = roleName;
+      player.align = align;
+
+      if (align === "Mafia") {
+        if (
+          Object.prototype.hasOwnProperty.call(gameState.currentMafia, roleName)
+        ) {
+          gameState.currentMafia[roleName] = userId;
+        }
+        gameState.mafiaPlayers.push(userId);
+      } else if (align === "Village") {
+        gameState.villagePlayers.push(userId);
+      } else {
+        gameState.neutralPlayers.push(userId);
+      }
+
+      log(
+        "SETUP",
+        `  ${align === "Mafia" ? "🔴" : align === "Village" ? "🟢" : "🔵"} ${player.username} → ${roleName} (${align})`,
+      );
+    }
+
+    const mafiaCount = gameState.mafiaPlayers.length;
+    const villageCount = gameState.villagePlayers.length;
+    const neutralCount = gameState.neutralPlayers.length;
 
     log(
       "SETUP",
-      `Starting setup for ${playerCount} players — ` +
-        `${mafiaCount} Mafia, ${villagerCount} Village, ${neutralCount} Neutral`,
+      `Distribution — Mafia: ${mafiaCount}, Village: ${villageCount}, Neutral: ${neutralCount}`,
     );
 
-    gameState.playersAlive = Array.from(gameState.players.keys());
-    const playerPool = Array.from(gameState.players.keys());
-
-    function drawPlayer() {
-      const idx = Math.floor(Math.random() * playerPool.length);
-      const [id] = playerPool.splice(idx, 1);
-      return id;
-    }
-
-    // Assign Mafia
-    const mafiaState = { currentTier: 1, rolePool: [...MAFIA_TIERS.pool] };
-    const mafiaClone = JSON.parse(JSON.stringify(MAFIA_TIERS));
-    for (let i = 0; i < mafiaCount; i++) {
-      const userId = drawPlayer();
-      const roleName = pickRole(mafiaClone, mafiaState);
-      const player = gameState.players.get(userId);
-      player.role = roleName;
-      player.align = "Mafia";
-      if (
-        Object.prototype.hasOwnProperty.call(gameState.currentMafia, roleName)
-      ) {
-        gameState.currentMafia[roleName] = userId;
-      }
-      gameState.mafiaPlayers.push(userId);
-      log("SETUP", `  🔴 ${player.username} → ${roleName} (Mafia)`);
-    }
-
-    // Assign Village
-    const villageState = { currentTier: 1, rolePool: [...VILLAGE_TIERS.pool] };
-    const villageClone = JSON.parse(JSON.stringify(VILLAGE_TIERS));
-    for (let i = 0; i < villagerCount; i++) {
-      const userId = drawPlayer();
-      const roleName = pickRole(villageClone, villageState);
-      const player = gameState.players.get(userId);
-      player.role = roleName;
-      player.align = "Village";
-      gameState.villagePlayers.push(userId);
-      log("SETUP", `  🟢 ${player.username} → ${roleName} (Village)`);
-    }
-
-    // Assign Neutral
-    const neutralState = { currentTier: 1, rolePool: [...NEUTRAL_TIERS.pool] };
-    const neutralClone = JSON.parse(JSON.stringify(NEUTRAL_TIERS));
-    for (let i = 0; i < neutralCount; i++) {
-      const userId = drawPlayer();
-      const roleName = pickRole(neutralClone, neutralState);
-      const player = gameState.players.get(userId);
-      player.role = roleName;
-      player.align = "Neutral";
-      gameState.neutralPlayers.push(userId);
-      log("SETUP", `  🔵 ${player.username} → ${roleName} (Neutral)`);
-
-      if (roleName === "Executioner") {
-        const eligibleTargets = gameState.villagePlayers.filter(
-          (id) => gameState.players.get(id)?.role !== "Mayor",
-        );
-        if (eligibleTargets.length > 0) {
-          const targetId =
-            eligibleTargets[Math.floor(Math.random() * eligibleTargets.length)];
-          gameState.roleState.Executioner.target = targetId;
-          gameState.roleState.Executioner.executionerId = userId;
-          log(
-            "SETUP",
-            `  🎯 Executioner target: ${gameState.players.get(targetId)?.username}`,
-          );
-        }
-      }
-    }
-
-    // Populate role state IDs
+    // ── Populate roleState IDs ──────────────────────────────────────────
     const rs = gameState.roleState;
     for (const [userId, player] of gameState.players) {
       switch (player.role) {
@@ -399,11 +415,27 @@ module.exports = {
       }
     }
 
-    // ── Send role DMs ─────────────────────────────────────────────────
-    log(
-      "SETUP",
-      `Sending role cards to all ${gameState.players.size} players...`,
-    );
+    // ── Executioner target ──────────────────────────────────────────────
+    for (const [userId, player] of gameState.players) {
+      if (player.role !== "Executioner") continue;
+
+      rs.Executioner.executionerId = userId;
+      const eligible = gameState.villagePlayers.filter(
+        (id) => gameState.players.get(id)?.role !== "Mayor",
+      );
+      if (eligible.length > 0) {
+        const targetId = eligible[Math.floor(Math.random() * eligible.length)];
+        rs.Executioner.target = targetId;
+        log(
+          "SETUP",
+          `  🎯 Executioner target: ${gameState.players.get(targetId)?.username}`,
+        );
+      }
+      break;
+    }
+
+    // ── Send role DMs ───────────────────────────────────────────────────
+    log("SETUP", `Sending role cards to all ${playerCount} players...`);
 
     const dmResults = await Promise.all(
       Array.from(gameState.players.entries()).map(async ([userId, player]) => {
@@ -428,9 +460,8 @@ module.exports = {
           roleInfo,
           player.username,
         );
-        if (!result.success) {
+        if (!result.success)
           return { userId, username: player.username, ...result };
-        }
 
         if (player.align === "Mafia") {
           await sendMafiaTeamDM(
@@ -464,12 +495,11 @@ module.exports = {
         `Setup failed — couldn't reach: ${failures.map((r) => r.username).join(", ")}`,
       );
       rollbackSetup(gameState);
-      await ctx.reply(
+      return ctx.reply(
         `❌ <b>Setup failed!</b>\n\nPlayers who couldn't receive their role:\n${failList}\n\n` +
           `Have each listed player open a private chat with me (/start), then the host can run /setup again.`,
         { parse_mode: "HTML" },
       );
-      return;
     }
 
     gameState.gameReady = true;
@@ -477,12 +507,14 @@ module.exports = {
     log("SETUP", `✅ Setup complete! Game is ready to start.`);
 
     const alignBreakdown =
-      `🔴 Mafia: <b>${mafiaCount}</b>\n` +
-      `🟢 Village: <b>${villagerCount}</b>\n` +
-      `🔵 Neutral: <b>${neutralCount}</b>`;
+      `🔴 العصابة (Mafia): <b>${mafiaCount}</b>\n` +
+      `🟢 الحومة (Village): <b>${villageCount}</b>\n` +
+      `🔵 محايد (Neutral): <b>${neutralCount}</b>`;
 
     await ctx.reply(
-      `✅ <b>Mafiaville راهي واجدة!</b>\n\n👥 <b>${playerCount} لاعبين</b> وزعنا عليهم الأدوار:\n${alignBreakdown}\n\n`,
+      `✅ <b>Mafiaville راهي واجدة!</b>\n\n` +
+        `👥 <b>${playerCount} لاعبين</b> وزعنا عليهم الأدوار:\n${alignBreakdown}\n\n` +
+        `الريس يدعس /startgame باش تبدا اللعبة!`,
       { parse_mode: "HTML" },
     );
   },

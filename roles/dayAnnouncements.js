@@ -130,9 +130,9 @@ async function announceNightResults(bot, gameState) {
         await toGroup(
           bot,
           groupChatId,
-          `🔴 <b>المافيا هجموا على ${player.username} البارح!</b>\n\n` +
+          `🔴 <b>اللاعب${player.username} سكتوه ما يقدرش يهدر اليوم !</b>\n\n` +
             `للأسف، الطبيب ما كانش تما باش يسلكو.`,
-          path.join(IMAGES_DIR, "death.png"),
+          path.join(IMAGES_DIR, "silneced.png"),
         );
         await sleep(2000);
         break;
@@ -171,8 +171,8 @@ async function announceNightResults(bot, gameState) {
         await toGroup(
           bot,
           groupChatId,
-          `🔫 <b>الفجيلانتي تيري على ${player.username} البارح!</b>\n\n${desc}`,
-          path.join(IMAGES_DIR, "death.png"),
+          `🔫 <b>الفجيلانت تيرا على ${player.username} البارح!</b>\n\n${desc}`,
+          path.join(IMAGES_DIR, "vigilante_attack.png"),
         );
         await sleep(1000);
         await revealLastWill(bot, groupChatId, player);
@@ -233,7 +233,7 @@ async function announceNightResults(bot, gameState) {
           groupChatId,
           `💥 <b>${player.username} راح عند "البايتر" (Baiter) — وطرق عليه البيج!</b>\n\n` +
             `يا جماعة، عسّوا رواحكم وين تروحوا في الليل.`,
-          path.join(IMAGES_DIR, "death.png"),
+          path.join(IMAGES_DIR, "baiter_house.png"),
         );
         await sleep(1000);
         await revealLastWill(bot, groupChatId, player);
@@ -248,7 +248,7 @@ async function announceNightResults(bot, gameState) {
           groupChatId,
           `⛓ <b>${player.username} جاز ليلة في الحبس ودارولو الإعدام!</b>\n\n` +
             `الغاشي راه حزين، وما علابالناش إذا كان مافيا ولا لا.`,
-          path.join(IMAGES_DIR, "death.png"),
+          path.join(IMAGES_DIR, "jailed_death.png"),
         );
         await sleep(1000);
         await revealLastWill(bot, groupChatId, player);
