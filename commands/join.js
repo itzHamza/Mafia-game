@@ -79,9 +79,9 @@ module.exports = {
       `SUCCESS userId=${userId} username=${ctx.from.first_name} isHost=${isHost} partySize=${gameState.players.size}`,
     );
 
-    const hostNote = isHost ? "\n👑 You are the <b>Host</b>." : "";
+    const hostNote = isHost ? "\n👑 أنت هو <b>الريس (Host)</b>." : "";
     ctx.reply(
-      `🃏 <b>${ctx.from.first_name}</b> has joined the game!${hostNote}\n👥 Party size: <b>${gameState.players.size}</b>`,
+      `🃏اللاعب : <b>${ctx.from.first_name}</b> راهو دخل للعبة!${hostNote}\n👥 عدد اللاعبين: <b>${gameState.players.size}</b>`,
       { parse_mode: "HTML" },
     );
   },

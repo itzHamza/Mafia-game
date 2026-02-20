@@ -1,41 +1,14 @@
 /**
- * roles/nightPrompts.js — DEBUG BUILD
- *
- * Key log tags to watch:
- *   [PROMPT] SEND  — about to call bot.telegram.sendMessage (the DM with buttons)
- *   [PROMPT] SENT  — sendMessage returned successfully — look at the ms value!
- *   [PROMPT] FAIL  — sendMessage threw an error
- *   [PROMPT] PRESS — player pressed a button (action registry resolved)
- *   [PROMPT] TIMEOUT — night timer fired before player responded
- *   [PROMPT] EDIT  — collapsing the keyboard after timeout
- *
- * If you see SEND without a matching SENT/FAIL for >5 seconds, that specific
- * sendMessage call is the source of the socket hang.
+ * roles/nightPrompts.js
  */
 
 "use strict";
 
 const actionRegistry = require("./actionRegistry");
+const { log, warn, err } = require("../logger");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG LOGGER
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ts() {
-  return new Date().toISOString().replace("T", " ").slice(0, 23);
-}
-function log(tag, msg) {
-  console.log(`[${ts()}] [${tag}] ${msg}`);
-}
-function warn(tag, msg) {
-  console.warn(`[${ts()}] [${tag}] ⚠️  ${msg}`);
-}
-function err(tag, msg) {
-  console.error(`[${ts()}] [${tag}] ❌ ${msg}`);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GENERIC SELECTION PROMPT — all timing lives here
+// GENERIC SELECTION PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function sendSelectionPrompt({
@@ -49,10 +22,6 @@ async function sendSelectionPrompt({
   gameState,
 }) {
   const key = `${prefix}:${round}:${userId}`;
-  log(
-    "PROMPT",
-    `Building keyboard key="${key}" options=${options.length} timeout=${timeout}s`,
-  );
 
   let inline_keyboard;
   try {
@@ -60,7 +29,7 @@ async function sendSelectionPrompt({
       { text: opt.label, callback_data: `${key}:${opt.value}` },
     ]);
   } catch (e) {
-    err("PROMPT", `Failed to build keyboard key="${key}" — ${e.message}`);
+    err("NIGHT", `Failed to build action keyboard: ${e.message}`);
     return null;
   }
 
@@ -68,91 +37,51 @@ async function sendSelectionPrompt({
     let timer;
     let sentMsgId = null;
 
-    // Register BEFORE sending to avoid race conditions
+    // Register before sending to avoid race conditions
     actionRegistry.register(key, (value) => {
-      const elapsed = Date.now() - sendStart;
-      log("PROMPT", `PRESS key="${key}" value="${value}" elapsed=${elapsed}ms`);
       clearTimeout(timer);
       resolve(value === "skip" ? null : value);
     });
-
-    log("PROMPT", `SEND userId=${userId} key="${key}"`);
-    const sendStart = Date.now();
 
     try {
       const sent = await bot.telegram.sendMessage(userId, text, {
         parse_mode: "HTML",
         reply_markup: { inline_keyboard },
       });
-      const sendMs = Date.now() - sendStart;
-      log(
-        "PROMPT",
-        `SENT userId=${userId} key="${key}" msgId=${sent.message_id} in ${sendMs}ms`,
-      );
-
-      if (sendMs > 3000) {
-        warn(
-          "PROMPT",
-          `SLOW SEND userId=${userId} took ${sendMs}ms — possible socket congestion`,
-        );
-      }
-
       sentMsgId = sent.message_id;
       gameState.activeNightPrompts.set(userId, sentMsgId);
     } catch (e) {
-      const sendMs = Date.now() - sendStart;
+      const player = gameState.players.get(userId);
       err(
-        "PROMPT",
-        `FAIL userId=${userId} key="${key}" after ${sendMs}ms — ${e.message}`,
+        "NIGHT",
+        `Could not send action prompt to ${player?.username ?? userId}: ${e.message}`,
       );
       actionRegistry.deregister(key);
       return resolve(null);
     }
 
-    // Night timer
+    // Night timer — fires if player doesn't respond in time
     timer = setTimeout(async () => {
-      if (!actionRegistry.has(key)) {
-        log(
-          "PROMPT",
-          `TIMEOUT key="${key}" — already resolved by button press`,
-        );
-        return;
-      }
-      log("PROMPT", `TIMEOUT key="${key}" userId=${userId} — deregistering`);
+      if (!actionRegistry.has(key)) return; // already resolved by button press
       actionRegistry.deregister(key);
 
+      const player = gameState.players.get(userId);
+      log(
+        "NIGHT",
+        `${player?.username ?? userId} ran out of time — no action taken`,
+      );
+
       if (sentMsgId) {
-        log(
-          "PROMPT",
-          `EDIT collapsing keyboard msgId=${sentMsgId} userId=${userId}`,
-        );
-        const t = Date.now();
         await bot.telegram
           .editMessageReplyMarkup(userId, sentMsgId, undefined, {
             inline_keyboard: [],
           })
-          .catch((e) =>
-            warn(
-              "PROMPT",
-              `EDIT failed after ${Date.now() - t}ms — ${e.message}`,
-            ),
-          );
-        log("PROMPT", `EDIT done in ${Date.now() - t}ms`);
+          .catch(() => {});
       }
 
-      const t2 = Date.now();
       await bot.telegram
         .sendMessage(userId, "⏰ Time's up! No action taken this night.")
-        .catch((e) =>
-          warn(
-            "PROMPT",
-            `Timeout notice DM failed after ${Date.now() - t2}ms — ${e.message}`,
-          ),
-        );
-      log(
-        "PROMPT",
-        `Timeout notice sent to userId=${userId} in ${Date.now() - t2}ms`,
-      );
+        .catch(() => {});
 
       resolve(null);
     }, timeout * 1000);
@@ -160,7 +89,7 @@ async function sendSelectionPrompt({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHARED HELPERS (unchanged)
+// SHARED HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildPlayerOptions(targetIds, gameState) {
@@ -168,17 +97,13 @@ function buildPlayerOptions(targetIds, gameState) {
     label: `${gameState.emojiArray[i]} ${gameState.players.get(id).username}`,
     value: String(id),
   }));
-  opts.push({ label: "⏭ No action tonight", value: "skip" });
+  opts.push({ label: "⏭ مكاش خدمة الليلة (تخطي)", value: "skip" });
   return opts;
 }
 
 function checkBaiter(targetId, actorId, gameState) {
   const target = gameState.players.get(targetId);
   if (target && target.role === "Baiter") {
-    log(
-      "PROMPT",
-      `checkBaiter: targetId=${targetId} IS the Baiter — actorId=${actorId} gets blown up`,
-    );
     return { action: "baited", choice: actorId };
   }
   return null;
@@ -189,59 +114,6 @@ function checkBaiter(targetId, actorId, gameState) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function collectKill(bot, userId, round, gameState) {
-  log("COLLECT", `collectKill userId=${userId}`);
-  const targetIds = gameState.playersAlive.filter((id) => {
-    const p = gameState.players.get(id);
-    return id !== userId && p && p.align !== "Mafia";
-  });
-  if (targetIds.length === 0) {
-    log("COLLECT", `collectKill: no targets for userId=${userId}`);
-    return {};
-  }
-
-  const selection = await sendSelectionPrompt({
-    bot,
-    userId,
-    round,
-    prefix: "na",
-    timeout: gameState.settings.nightTime,
-    gameState,
-    text: `🔴 <b>Night ${round} — Choose your kill target</b>\n\nSelect a player to eliminate tonight:`,
-    options: buildPlayerOptions(targetIds, gameState),
-  });
-
-  if (!selection) {
-    await bot.telegram
-      .sendMessage(userId, "You chose not to kill anyone tonight.", {
-        parse_mode: "HTML",
-      })
-      .catch(() => {});
-    return {};
-  }
-  const targetId = Number(selection);
-  const baited = checkBaiter(targetId, userId, gameState);
-  if (baited) {
-    await bot.telegram
-      .sendMessage(
-        userId,
-        "💥 You visited the Baiter's house — and were blown up!",
-      )
-      .catch(() => {});
-    return baited;
-  }
-  const target = gameState.players.get(targetId);
-  await bot.telegram
-    .sendMessage(
-      userId,
-      `🔪 You chose to kill <b>${target.username}</b> tonight.`,
-      { parse_mode: "HTML" },
-    )
-    .catch(() => {});
-  return { action: "kill", choice: targetId };
-}
-
-async function collectFrame(bot, userId, round, gameState) {
-  log("COLLECT", `collectFrame userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => {
     const p = gameState.players.get(id);
     return id !== userId && p && p.align !== "Mafia";
@@ -255,13 +127,19 @@ async function collectFrame(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🔴 <b>Night ${round} — Choose your frame target</b>\n\nSelect a player to frame:`,
+    text: `🔴 <b>الليلة رقم ${round} — خيّر الضحية تاعك</b>\n\nاسمي واحد باش تصفّيها له الليلة:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to frame anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خيرت باش ما تصفّيها لحتّى واحد الليلة. جازت ليلة بيضا.</b>",
+        {
+          parse_mode: "HTML",
+        },
+      )
       .catch(() => {});
     return {};
   }
@@ -271,7 +149,8 @@ async function collectFrame(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -280,22 +159,74 @@ async function collectFrame(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🖼 You chose to frame <b>${target.username}</b> tonight.`,
+      `🔪 <b>قررت باش تصفّيها لـ ${target.username} الليلة. الخدمة راهي بدات!</b>`,
       { parse_mode: "HTML" },
     )
+    .catch(() => {});
+  return { action: "kill", choice: targetId };
+}
+
+async function collectFrame(bot, userId, round, gameState) {
+  const targetIds = gameState.playersAlive.filter((id) => {
+    const p = gameState.players.get(id);
+    return id !== userId && p && p.align !== "Mafia";
+  });
+  if (targetIds.length === 0) return {};
+
+  const selection = await sendSelectionPrompt({
+    bot,
+    userId,
+    round,
+    prefix: "na",
+    timeout: gameState.settings.nightTime,
+    gameState,
+    text: `🔴 <b>الليلة رقم ${round} — خيّر شكون حاب تغرق</b>\n\nاسمي واحد باش تلصقلو التهمة وتخلطها على لانسبيكتور:`,
+    options: buildPlayerOptions(targetIds, gameState),
+  });
+
+  if (!selection) {
+    await bot.telegram
+      .sendMessage(
+        userId,
+        "<b>خيرت باش ما تلصق التهمة لحتّى واحد الليلة. خليت الحالة صافية.</b>",
+        { parse_mode: "HTML" },
+      )
+      .catch(() => {});
+    return {};
+  }
+  const targetId = Number(selection);
+  const baited = checkBaiter(targetId, userId, gameState);
+  if (baited) {
+    await bot.telegram
+      .sendMessage(
+        userId,
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
+      )
+      .catch(() => {});
+    return baited;
+  }
+  const target = gameState.players.get(targetId);
+  await bot.telegram
+      .sendMessage(
+        userId,
+        ` <b>قررت باش تلصقلو التهمة على ${target.username} الليلة.</b>`,
+        { parse_mode: "HTML" },
+      )
     .catch(() => {});
   return { action: "frame", choice: targetId };
 }
 
 async function collectSilence(bot, userId, round, gameState) {
-  log("COLLECT", `collectSilence userId=${userId}`);
   const rs = gameState.roleState.Silencer;
-
   if (rs.workedLastNight) {
-    log("COLLECT", `collectSilence: Silencer on cooldown userId=${userId}`);
     rs.workedLastNight = false;
     await bot.telegram
-      .sendMessage(userId, "😴 You're too tired to silence anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>😴 راك عيّان بزاف الليلة، ما تقدر تبلّع الفم لحتّى واحد.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -305,7 +236,11 @@ async function collectSilence(bot, userId, round, gameState) {
   );
   if (targetIds.length === 0) {
     await bot.telegram
-      .sendMessage(userId, "No eligible targets to silence tonight.")
+      .sendMessage(
+        userId,
+        "<b>مكاش شكون تقدر تبلعلو فمه الليلة، كامل راهم 'خارج التغطية'.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -317,13 +252,17 @@ async function collectSilence(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🔴 <b>Night ${round} — Choose your silence target</b>\n\nSelect a player to silence:`,
+          text: `🔴 <b>الليلة رقم ${round} — خيّر شكون حاب تبلعلو فمه</b>\n\nاسمي واحد باش تبلعلو فمه:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to silence anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خيرت باش ما تبلعلو فمه لحتّى واحد الليلة. خليت الحالة صافية.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -333,7 +272,8 @@ async function collectSilence(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -344,7 +284,7 @@ async function collectSilence(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🤫 You chose to silence <b>${target.username}</b> tonight.`,
+      `🤫 <b>خلاص، قررت تبلّع الفم لـ ${target.username} الليلة. غدوة يقعد غير يشوف!</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -356,7 +296,6 @@ async function collectSilence(bot, userId, round, gameState) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function collectHeal(bot, userId, round, gameState) {
-  log("COLLECT", `collectHeal userId=${userId}`);
   const rs = gameState.roleState.Doctor;
   const targetIds = gameState.playersAlive.filter((id) => id !== rs.lastChoice);
   if (targetIds.length === 0) return {};
@@ -368,13 +307,17 @@ async function collectHeal(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Choose who to protect</b>\n\nSelect a player to save:`,
+    text: `🟢 <b>الليلة رقم ${round} — خيّر شكون تسلك</b>\n\nاسمي واحد باش تحميه وتمنعو من الموت الليلة:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to save anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خيرت باش ما تسلك لحتّى واحد الليلة. خليت الحالة صافية.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -385,7 +328,8 @@ async function collectHeal(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -394,7 +338,7 @@ async function collectHeal(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `💊 You chose to protect <b>${target.username}</b> tonight.`,
+      `💊 <b>خلاص، قررت تحمي ${target.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -402,7 +346,6 @@ async function collectHeal(bot, userId, round, gameState) {
 }
 
 async function collectCheck(bot, userId, round, gameState) {
-  log("COLLECT", `collectCheck userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
   if (targetIds.length === 0) return {};
 
@@ -413,13 +356,17 @@ async function collectCheck(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Choose who to investigate</b>\n\nSelect a player:`,
+    text: `🟢 <b>الليلة رقم ${round} — خيّر شكون تفتّش</b>\n\nاسمي واحد باش لانسبيكتور يعرف قرايتو:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to investigate anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خيرت باش ما تفتّش لحتّى واحد الليلة. خليت الحالة صافية.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -429,7 +376,8 @@ async function collectCheck(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -438,7 +386,7 @@ async function collectCheck(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🔍 You chose to investigate <b>${target.username}</b> tonight.`,
+      `🔍 <b>خلاص، قررت تفتّش ${target.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -446,7 +394,6 @@ async function collectCheck(bot, userId, round, gameState) {
 }
 
 async function collectShoot(bot, userId, round, gameState) {
-  log("COLLECT", `collectShoot userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
   if (targetIds.length === 0) return {};
 
@@ -457,13 +404,17 @@ async function collectShoot(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Choose who to shoot</b>\n\n⚠️ <i>Shooting a villager causes you to die of guilt!</i>\n\nSelect a player:`,
+    text: `🟢 <b>الليلة رقم ${round} — خيّر شكون تيري عليه</b>\n\n⚠️ <i>رد بالك: إذا تيريت في واحد بريء، تموت بـ 'الغُلب' وتأنيب الضمير!</i>\n\nاسمي واحد باش تصفّيها له:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to shoot anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خبّيت المكحلة ومكحلتهاش الليلة. خيرت باش ما تيري في حتى واحد.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -473,7 +424,8 @@ async function collectShoot(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -482,7 +434,7 @@ async function collectShoot(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🔫 You chose to shoot <b>${target.username}</b> tonight.`,
+      `🔫 <b>خلاص، قررت تيري ${target.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -490,12 +442,8 @@ async function collectShoot(bot, userId, round, gameState) {
 }
 
 async function collectReveal(bot, userId, round, gameState) {
-  log("COLLECT", `collectReveal userId=${userId}`);
   const rs = gameState.roleState.Mayor;
-  if (rs.revealed) {
-    log("COLLECT", `collectReveal: Mayor already revealed userId=${userId}`);
-    return {};
-  }
+  if (rs.revealed) return {};
   const player = gameState.players.get(userId);
   if (player && player.silencedLastRound) rs.revealed = false;
 
@@ -506,7 +454,7 @@ async function collectReveal(bot, userId, round, gameState) {
     prefix: "na_mayor",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Mayor Decision</b>\n\nReveal yourself at tomorrow's meeting?`,
+    text: `🟢 <b>الليلة رقم ${round} — قرار المير (Mayor)</b>\n\nحاب تبيّن هويتك لولاد الحومة في اجتماع غدوة؟`,
     options: [
       { label: "✅ Yes — reveal myself tomorrow", value: "yes" },
       { label: "❌ No — stay hidden", value: "no" },
@@ -515,17 +463,20 @@ async function collectReveal(bot, userId, round, gameState) {
 
   if (!selection || selection === "no") {
     await bot.telegram
-      .sendMessage(userId, "🏛 You chose to remain hidden tomorrow.")
+      .sendMessage(
+        userId,
+        "<b>🏛 خيرت باش تقعد متخبي غدوة. واحد ما علبالو بلي أنت هو المير.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
   rs.revealed = true;
   gameState.mayor = userId;
-  log("COLLECT", `Mayor revealed userId=${userId}`);
   await bot.telegram
     .sendMessage(
       userId,
-      "🏛 You will reveal yourself as the <b>Mayor</b> at tomorrow's meeting!",
+          "🏛 <b>أنت المير، وستُبيّن هويتك غدوة في اجتماع الحومة.</b>",
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -533,13 +484,15 @@ async function collectReveal(bot, userId, round, gameState) {
 }
 
 async function collectDistract(bot, userId, round, gameState) {
-  log("COLLECT", `collectDistract userId=${userId}`);
   const rs = gameState.roleState.Distractor;
   if (rs.workedLastNight) {
-    log("COLLECT", `collectDistract: on cooldown userId=${userId}`);
     rs.workedLastNight = false;
     await bot.telegram
-      .sendMessage(userId, "😴 You're too tired to distract anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>😴 راك فاشل الليلة، المخلط عيا... ما تقدر تتلف الخيط لحتّى واحد.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -554,13 +507,17 @@ async function collectDistract(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Choose who to distract</b>\n\nSelect a player:`,
+        text: `🟢 <b>الليلة رقم ${round} — خيّر شكون تخلط عليه</b>\n\nاسمي واحد باش تصفّيها له:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to distract anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خبّيت المكحلة ومكحلتهاش الليلة. خيرت باش ما تخلطش على حتى واحد.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -570,7 +527,8 @@ async function collectDistract(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -580,7 +538,7 @@ async function collectDistract(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🥴 You chose to distract <b>${target.username}</b> tonight.`,
+      `🥴 <b>خلاص، قررت تخلط على ${target.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -588,11 +546,14 @@ async function collectDistract(bot, userId, round, gameState) {
 }
 
 async function collectPI(bot, userId, round, gameState) {
-  log("COLLECT", `collectPI userId=${userId}`);
   const eligible = gameState.playersAlive.filter((id) => id !== userId);
   if (eligible.length < 2) {
     await bot.telegram
-      .sendMessage(userId, "⚠️ Not enough players alive to compare.")
+      .sendMessage(
+        userId,
+        "<b>⚠️ مكاش غاشي بزاف باش تقارن بيناتهم، الحالة راهي فارغة.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -604,13 +565,17 @@ async function collectPI(bot, userId, round, gameState) {
     prefix: "na_pi1",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — PI Investigation (1/2)</b>\n\nSelect the <b>first</b> player:`,
+    text: `🟢 <b>الليلة رقم ${round} — تحقق من الـ PI (1/2)</b>\n\nاختر <b>اللاعب الأول</b>:`,
     options: buildPlayerOptions(eligible, gameState),
   });
 
   if (!sel1) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to investigate anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>خبّيت المكحلة ومكحلتهاش الليلة. خيرت باش ما تقارنش بيناتهم.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -620,7 +585,8 @@ async function collectPI(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited1;
@@ -629,7 +595,11 @@ async function collectPI(bot, userId, round, gameState) {
   const eligible2 = eligible.filter((id) => id !== target1Id);
   if (eligible2.length === 0) {
     await bot.telegram
-      .sendMessage(userId, "⚠️ No remaining players to compare against.")
+      .sendMessage(
+        userId,
+        "<b>⚠️ مكاش غاشي بزاف باش تقارن بيناتهم، الحالة راهي فارغة.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -642,7 +612,7 @@ async function collectPI(bot, userId, round, gameState) {
     prefix: "na",
     timeout: Math.ceil(gameState.settings.nightTime / 2),
     gameState,
-    text: `🟢 <b>Night ${round} — PI Investigation (2/2)</b>\n\nComparing against: <b>${target1Name}</b>\n\nSelect the <b>second</b> player:`,
+    text: `🟢 <b>الليلة رقم ${round} — لانسبيكتور الخاص (2/2)</b>\n\nراك تقارن مع: <b>${target1Name}</b>\n\nخيّر <b>الشخص الثاني</b> باش نعرفوا الحقيقة:`,
     options: buildPlayerOptions(eligible2, gameState),
   });
 
@@ -650,7 +620,8 @@ async function collectPI(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "Investigation incomplete — no second target selected.",
+        "<b>التحقيق ما كملش — ما خيرتش الشخص الثاني باش تقارن بيناتهم.</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return {};
@@ -661,7 +632,8 @@ async function collectPI(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited2;
@@ -671,7 +643,7 @@ async function collectPI(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `🔍 You chose to compare <b>${target1Name}</b> and <b>${target2Name}</b>.`,
+      `🔍 <b>قررت باش تقارن بين ${target1Name} و ${target2Name}. الليلة يبان الساس!</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -679,7 +651,6 @@ async function collectPI(bot, userId, round, gameState) {
 }
 
 async function collectSpy(bot, userId, round, gameState) {
-  log("COLLECT", `collectSpy userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
   if (targetIds.length === 0) return {};
 
@@ -690,13 +661,17 @@ async function collectSpy(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🟢 <b>Night ${round} — Choose who to watch</b>\n\nSelect a player to follow:`,
+    text: `🟢 <b>الليلة رقم ${round} — خيّر شكون تعسّ</b>\n\nاسمي واحد باش تتبعه وتشوف شكون راح يزوره:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to watch anyone tonight.")
+      .sendMessage(
+        userId,
+        "<b>ما خيرتش أحد باش تتبعه الليلة.</b>",
+        { parse_mode: "HTML" },
+      )
       .catch(() => {});
     return {};
   }
@@ -706,7 +681,8 @@ async function collectSpy(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>دخلت لدار الجزار (Baiter) — طرطق عليك القاز وراحت فيك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
@@ -715,7 +691,7 @@ async function collectSpy(bot, userId, round, gameState) {
   await bot.telegram
     .sendMessage(
       userId,
-      `👁 You chose to watch <b>${target.username}</b> tonight.`,
+      `👁 <b>اخترت تتبع ${target.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -723,19 +699,11 @@ async function collectSpy(bot, userId, round, gameState) {
 }
 
 async function collectJailerKill(bot, userId, round, gameState) {
-  log("COLLECT", `collectJailerKill userId=${userId}`);
   const rs = gameState.roleState.Jailer;
-  if (rs.killsLeft === 0 || !rs.lastSelection) {
-    log(
-      "COLLECT",
-      `collectJailerKill: no execute ability/prisoner userId=${userId}`,
-    );
-    return {};
-  }
+  if (rs.killsLeft === 0 || !rs.lastSelection) return {};
 
   const prisoner = gameState.players.get(rs.lastSelection);
   if (!prisoner) return {};
-  log("COLLECT", `collectJailerKill: prisoner=${prisoner.username}`);
 
   const selection = await sendSelectionPrompt({
     bot,
@@ -744,7 +712,7 @@ async function collectJailerKill(bot, userId, round, gameState) {
     prefix: "na_jailer",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `⛓ <b>Night ${round} — Execute your prisoner?</b>\n\nYour prisoner is: <b>${prisoner.username}</b>\n\nDo you want to execute them tonight?`,
+    text: `⛓ <b>الليلة رقم ${round} — تصفّيها للحبسي؟</b>\n\nالحبسي اللي راهو عندك هو: <b>${prisoner.username}</b>\n\nحاب تصفّيها له الليلة ولا تطلق صراحو؟`,
     options: [
       { label: `⚖️ Yes — execute ${prisoner.username}`, value: "yes" },
       { label: "🔓 No — release them", value: "no" },
@@ -755,17 +723,16 @@ async function collectJailerKill(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        `🔓 You chose not to execute <b>${prisoner.username}</b>.`,
+        `🔓 <b>ما اخترتش تصفّي ${prisoner.username} الليلة.</b>`,
         { parse_mode: "HTML" },
       )
       .catch(() => {});
     return {};
   }
-  log("COLLECT", `collectJailerKill: executing prisoner=${prisoner.username}`);
   await bot.telegram
     .sendMessage(
       userId,
-      `⚖️ You chose to execute <b>${prisoner.username}</b> tonight.`,
+      `⚖️ <b>اختار تصفّي ${prisoner.username} الليلة.</b>`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});
@@ -777,7 +744,6 @@ async function collectJailerKill(bot, userId, round, gameState) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function collectArsonist(bot, userId, round, gameState) {
-  log("COLLECT", `collectArsonist userId=${userId}`);
   const rs = gameState.roleState.Arsonist;
   const doused = rs.doused;
   const dousable = gameState.playersAlive.filter(
@@ -790,14 +756,9 @@ async function collectArsonist(bot, userId, round, gameState) {
           .join(", ")
       : "none";
 
-  log(
-    "COLLECT",
-    `collectArsonist: doused=[${dousedNames}] dousable=${dousable.length}`,
-  );
-
   const options = [
     {
-      label: `🔥 IGNITE all doused players (${doused.length})`,
+      label: `🔥 شعل النار في كامل المشمخين (${doused.length})`,
       value: "ignite",
     },
     ...dousable.map((id, i) => ({
@@ -814,13 +775,13 @@ async function collectArsonist(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text: `🔵 <b>Night ${round} — Arsonist Action</b>\n\nCurrently doused: <b>${dousedNames}</b>\n\nChoose your action:`,
+    text: `🔵 <b>الليلة رقم ${round} — مول الليسونس (Arsonist)</b>\n\nاللي راهم "مشمخين" ذرك: <b>${dousedNames}</b>\n\nواش راك ناوي تدير الليلة؟`,
     options,
   });
 
   if (!selection) {
     await bot.telegram
-      .sendMessage(userId, "You chose not to act tonight.")
+      .sendMessage(userId, "<b>ما اخترتش تدير الليلة.</b>", { parse_mode: "HTML" })
       .catch(() => {});
     return {};
   }
@@ -828,15 +789,19 @@ async function collectArsonist(bot, userId, round, gameState) {
   if (selection === "ignite") {
     if (doused.length === 0) {
       await bot.telegram
-        .sendMessage(userId, "⚠️ No doused players to ignite!")
+        .sendMessage(
+          userId,
+          "<b>⚠️ مكاش حتى واحد 'مشمخ' بالليسونس باش تشعل فيه النار!</b>",
+          { parse_mode: "HTML" },
+        )
         .catch(() => {});
       return {};
     }
-    log("COLLECT", `collectArsonist: IGNITE triggered userId=${userId}`);
     await bot.telegram
       .sendMessage(
         userId,
-        `🔥 You ignite all ${doused.length} doused player(s) tonight!`,
+        `🔥 <b>يا محاينك! شعلت النار في ${doused.length} اللي كانوا مشمخين الليلة!</b>`,
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return { action: "ignite", choice: userId };
@@ -848,17 +813,14 @@ async function collectArsonist(bot, userId, round, gameState) {
     await bot.telegram
       .sendMessage(
         userId,
-        "💥 You visited the Baiter's house — and were blown up!",
+        "💥 <b>لقد زرت بيت البائس — وتم تفجيرك!</b>",
+        { parse_mode: "HTML" },
       )
       .catch(() => {});
     return baited;
   }
   rs.doused.push(targetId);
   const target = gameState.players.get(targetId);
-  log(
-    "COLLECT",
-    `collectArsonist: doused userId=${targetId} username=${target?.username}`,
-  );
   await bot.telegram
     .sendMessage(userId, `💧 You doused <b>${target.username}</b> tonight.`, {
       parse_mode: "HTML",
@@ -873,30 +835,16 @@ async function collectArsonist(bot, userId, round, gameState) {
 
 async function collectNightAction(bot, userId, round, gameState) {
   const player = gameState.players.get(userId);
-  if (!player || !player.isAlive) {
-    warn(
-      "COLLECT",
-      `collectNightAction: player userId=${userId} not found or dead`,
-    );
-    return {};
-  }
+  if (!player || !player.isAlive) return {};
 
   const role = player.role;
-  log(
-    "COLLECT",
-    `collectNightAction userId=${userId} username=${player.username} role=${role}`,
-  );
 
   const activeGodfatherId = gameState.getActiveGodfather();
   if (activeGodfatherId === userId && role !== "Godfather") {
-    log(
-      "COLLECT",
-      `collectNightAction: userId=${userId} is ACTING Godfather (role=${role})`,
-    );
     await bot.telegram
       .sendMessage(
         userId,
-        `🔴 <b>As the acting Godfather, you must order tonight's kill.</b>`,
+        `🔴 <b>بما أنك راك 'البوص' الليلة، لازم تعطينا الأمر: شكون اللي راح يتصفّى؟</b>`,
         { parse_mode: "HTML" },
       )
       .catch(() => {});
@@ -907,7 +855,6 @@ async function collectNightAction(bot, userId, round, gameState) {
     case "Godfather":
       return collectKill(bot, userId, round, gameState);
     case "Mafioso":
-      log("COLLECT", `collectNightAction: Mafioso no action userId=${userId}`);
       return {};
     case "Framer":
       return collectFrame(bot, userId, round, gameState);
@@ -934,15 +881,11 @@ async function collectNightAction(bot, userId, round, gameState) {
     case "Executioner":
     case "Jester":
     case "Baiter":
-      log(
-        "COLLECT",
-        `collectNightAction: ${role} has no night action userId=${userId}`,
-      );
-      return {};
+      return {}; // No night action
     default:
       warn(
-        "COLLECT",
-        `collectNightAction: unknown role="${role}" userId=${userId}`,
+        "NIGHT",
+        `Unknown role "${role}" for player ${player.username} — no action sent`,
       );
       return {};
   }

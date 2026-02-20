@@ -1,11 +1,5 @@
 /**
- * commands/setup.js — DEBUG BUILD
- *
- * Key log tags:
- *   [SETUP] JOIN — player count, role distribution
- *   [SETUP-DM] SEND/SENT/FAIL — individual role card DM timing per userId
- *
- * If a setup DM hangs, SEND will appear without a matching SENT/FAIL.
+ * commands/setup.js
  */
 
 "use strict";
@@ -28,25 +22,10 @@ const ADMIN_IDS = (process.env.ADMIN_IDS ?? "")
   .map((s) => parseInt(s.trim(), 10))
   .filter((n) => !isNaN(n));
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LOGGER
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ts() {
-  return new Date().toISOString().replace("T", " ").slice(0, 23);
-}
-function log(tag, msg) {
-  console.log(`[${ts()}] [${tag}] ${msg}`);
-}
-function warn(tag, msg) {
-  console.warn(`[${ts()}] [${tag}] ⚠️  ${msg}`);
-}
-function err(tag, msg) {
-  console.error(`[${ts()}] [${tag}] ❌ ${msg}`);
-}
+const { log, warn, err } = require("../logger");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROLE PICKER (unchanged)
+// ROLE PICKER
 // ─────────────────────────────────────────────────────────────────────────────
 
 function pickRole(tiersClone, state) {
@@ -72,33 +51,29 @@ function pickRole(tiersClone, state) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROLE CARD FORMATTER (unchanged)
+// ROLE CARD FORMATTER
 // ─────────────────────────────────────────────────────────────────────────────
 
 function formatRoleCard(roleName, roleInfo) {
   const emoji = ALIGN_EMOJI[roleInfo.align] ?? "⚪";
   return (
-    `🎭 <b>You are the ${roleName.toUpperCase()}</b>\n\n` +
-    `${emoji} <b>Alignment:</b> ${roleInfo.align}\n\n` +
+    `🎭 <b>نتا هو ${roleName.toUpperCase()}</b>\n\n` +
+    `${emoji} <b>الجهة :</b> ${roleInfo.align}\n\n` +
     `📖 <i>${roleInfo.description}</i>\n\n` +
-    `🎯 <b>Goal:</b> ${roleInfo.goal}`
+    `🎯 <b>الهدف تاعك :</b> ${roleInfo.goal}`
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DM SENDERS — all individually timed
+// DM SENDERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function sendRoleCard(bot, userId, roleName, roleInfo) {
+async function sendRoleCard(bot, userId, roleName, roleInfo, playerName) {
   const cardText = formatRoleCard(roleName, roleInfo);
   const imagePath = path.join(IMAGES_DIR, roleInfo.image);
   const imageExists = fs.existsSync(imagePath);
 
-  log(
-    "SETUP-DM",
-    `SEND userId=${userId} role=${roleName} hasImage=${imageExists}`,
-  );
-  const t = Date.now();
+  log("SETUP", `Sending role card to ${playerName} (${roleName})...`);
 
   try {
     if (imageExists) {
@@ -117,28 +92,21 @@ async function sendRoleCard(bot, userId, roleName, roleInfo) {
         });
       }
     } else {
-      warn(
-        "SETUP-DM",
-        `Image missing for role=${roleName} — sending text only`,
-      );
       await bot.telegram.sendMessage(userId, cardText, { parse_mode: "HTML" });
     }
 
-    log(
-      "SETUP-DM",
-      `SENT userId=${userId} role=${roleName} in ${Date.now() - t}ms`,
-    );
+    log("SETUP", `✅ ${playerName} received their role card`);
     return { success: true };
   } catch (e) {
     err(
-      "SETUP-DM",
-      `FAIL userId=${userId} role=${roleName} after ${Date.now() - t}ms — ${e.message}`,
+      "SETUP",
+      `❌ Could not reach ${playerName} — they need to /start the bot first (${e.message})`,
     );
     return { success: false, error: e.message };
   }
 }
 
-async function sendMafiaTeamDM(bot, userId, mafiaIds, players) {
+async function sendMafiaTeamDM(bot, userId, mafiaIds, players, playerName) {
   const teammates = mafiaIds
     .filter((id) => id !== userId)
     .map((id) => {
@@ -151,20 +119,23 @@ async function sendMafiaTeamDM(bot, userId, mafiaIds, players) {
       ? `🔴 <b>Your Mafia teammates:</b>\n${teammates.join("\n")}\n\nCoordinate via DM.`
       : `🔴 <b>You are the sole Mafia member</b> this game. Good luck!`;
 
-  log("SETUP-DM", `SEND Mafia roster to userId=${userId}`);
-  const t = Date.now();
   await bot.telegram
     .sendMessage(userId, msg, { parse_mode: "HTML" })
-    .catch((e) => {
+    .catch((e) =>
       err(
-        "SETUP-DM",
-        `Mafia roster FAIL userId=${userId} after ${Date.now() - t}ms — ${e.message}`,
-      );
-    });
-  log("SETUP-DM", `Mafia roster SENT userId=${userId} in ${Date.now() - t}ms`);
+        "SETUP",
+        `Could not send Mafia team info to ${playerName}: ${e.message}`,
+      ),
+    );
 }
 
-async function sendExecutionerTargetDM(bot, userId, targetId, players) {
+async function sendExecutionerTargetDM(
+  bot,
+  userId,
+  targetId,
+  players,
+  playerName,
+) {
   const target = players.get(targetId);
   if (!target) return;
   const imagePath = path.join(IMAGES_DIR, "death.png");
@@ -172,11 +143,6 @@ async function sendExecutionerTargetDM(bot, userId, targetId, players) {
     `🎯 <b>Your target is ${target.username}.</b>\n\nYour goal is to get them <b>lynched</b> by the town.\n\n` +
     `If they die during the <i>night</i> instead, you will automatically become the <b>Jester</b>.`;
 
-  log(
-    "SETUP-DM",
-    `SEND Executioner target to userId=${userId} targetId=${targetId}`,
-  );
-  const t = Date.now();
   try {
     if (fs.existsSync(imagePath)) {
       await bot.telegram.sendPhoto(
@@ -187,24 +153,20 @@ async function sendExecutionerTargetDM(bot, userId, targetId, players) {
     } else {
       await bot.telegram.sendMessage(userId, msg, { parse_mode: "HTML" });
     }
-    log(
-      "SETUP-DM",
-      `Executioner target SENT userId=${userId} in ${Date.now() - t}ms`,
-    );
   } catch (e) {
     err(
-      "SETUP-DM",
-      `Executioner target FAIL userId=${userId} after ${Date.now() - t}ms — ${e.message}`,
+      "SETUP",
+      `Could not send Executioner target info to ${playerName}: ${e.message}`,
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROLLBACK (unchanged)
+// ROLLBACK
 // ─────────────────────────────────────────────────────────────────────────────
 
 function rollbackSetup(gameState) {
-  log("SETUP", "Rolling back setup...");
+  log("SETUP", "Rolling back setup — restoring lobby state...");
   for (const [, player] of gameState.players) {
     player.role = undefined;
     player.align = undefined;
@@ -245,7 +207,7 @@ function rollbackSetup(gameState) {
   rs.Arsonist.doused = [];
   rs.Arsonist.alreadyDead = false;
   rs.Arsonist.arsonistId = null;
-  log("SETUP", "Rollback complete");
+  log("SETUP", "Rollback complete — players can run /setup again");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,11 +220,6 @@ module.exports = {
     "Set up a new game by assigning roles to all players in the lobby.",
 
   async execute(ctx, args, gameState, bot) {
-    log(
-      "SETUP",
-      `Invoked by from=${ctx.from.id} players=${gameState.players.size}`,
-    );
-
     if (ctx.chat.type === "private") {
       return ctx.reply("⚠️ This command must be used in the group chat.");
     }
@@ -289,16 +246,14 @@ module.exports = {
     }
 
     gameState.phase = "setup";
-    log("SETUP", "Phase set to setup");
 
     await ctx.reply(
-      `⚙️ <b>Setting up Mafiaville for ${gameState.players.size} players…</b>\n\n` +
-        `Each player will receive their role via 📨 <b>private message</b>.\n\n` +
-        `⚠️ If you haven't messaged me privately, tap my profile and press <b>Start</b>.`,
+        `كل واحد فيكم غادي يوصلو الدور (Role) تاعو في 📨 <b>الخاص</b>.\n\n` +
+        `⚠️ إذا مزال مابعثليش ميساج، أدخل للبروفايل تاعي وادعس على <b>Start</b>.`,
       { parse_mode: "HTML" },
     );
 
-    // Group size calculation
+    // ── Group size calculation ────────────────────────────────────────
     const playerCount = gameState.players.size;
     const mafiaHidden = gameState.settings.mafiaHidden;
     let mafiaCount, neutralCount;
@@ -317,9 +272,11 @@ module.exports = {
     }
 
     const villagerCount = playerCount - mafiaCount - neutralCount;
+
     log(
       "SETUP",
-      `Distribution: mafia=${mafiaCount} village=${villagerCount} neutral=${neutralCount}`,
+      `Starting setup for ${playerCount} players — ` +
+        `${mafiaCount} Mafia, ${villagerCount} Village, ${neutralCount} Neutral`,
     );
 
     gameState.playersAlive = Array.from(gameState.players.keys());
@@ -346,10 +303,7 @@ module.exports = {
         gameState.currentMafia[roleName] = userId;
       }
       gameState.mafiaPlayers.push(userId);
-      log(
-        "SETUP",
-        `Assigned Mafia: userId=${userId} username=${player.username} role=${roleName}`,
-      );
+      log("SETUP", `  🔴 ${player.username} → ${roleName} (Mafia)`);
     }
 
     // Assign Village
@@ -362,10 +316,7 @@ module.exports = {
       player.role = roleName;
       player.align = "Village";
       gameState.villagePlayers.push(userId);
-      log(
-        "SETUP",
-        `Assigned Village: userId=${userId} username=${player.username} role=${roleName}`,
-      );
+      log("SETUP", `  🟢 ${player.username} → ${roleName} (Village)`);
     }
 
     // Assign Neutral
@@ -378,10 +329,7 @@ module.exports = {
       player.role = roleName;
       player.align = "Neutral";
       gameState.neutralPlayers.push(userId);
-      log(
-        "SETUP",
-        `Assigned Neutral: userId=${userId} username=${player.username} role=${roleName}`,
-      );
+      log("SETUP", `  🔵 ${player.username} → ${roleName} (Neutral)`);
 
       if (roleName === "Executioner") {
         const eligibleTargets = gameState.villagePlayers.filter(
@@ -394,7 +342,7 @@ module.exports = {
           gameState.roleState.Executioner.executionerId = userId;
           log(
             "SETUP",
-            `Executioner target: userId=${userId} → targetId=${targetId}`,
+            `  🎯 Executioner target: ${gameState.players.get(targetId)?.username}`,
           );
         }
       }
@@ -451,12 +399,11 @@ module.exports = {
           break;
       }
     }
-    log("SETUP", "Role state IDs populated");
 
-    // Send role DMs — sequentially with individual timing
+    // ── Send role DMs ─────────────────────────────────────────────────
     log(
       "SETUP",
-      `Sending role DMs to ${gameState.players.size} players (sequential with 200ms gap)...`,
+      `Sending role cards to all ${gameState.players.size} players...`,
     );
 
     const dmResults = await Promise.all(
@@ -464,8 +411,8 @@ module.exports = {
         const roleInfo = ROLES[player.role];
         if (!roleInfo) {
           err(
-            "SETUP-DM",
-            `No role data for role=${player.role} userId=${userId}`,
+            "SETUP",
+            `No role data found for role "${player.role}" — this is a bug`,
           );
           return {
             userId,
@@ -475,7 +422,13 @@ module.exports = {
           };
         }
 
-        const result = await sendRoleCard(bot, userId, player.role, roleInfo);
+        const result = await sendRoleCard(
+          bot,
+          userId,
+          player.role,
+          roleInfo,
+          player.username,
+        );
         if (!result.success) {
           return { userId, username: player.username, ...result };
         }
@@ -486,6 +439,7 @@ module.exports = {
             userId,
             gameState.mafiaPlayers,
             gameState.players,
+            player.username,
           );
         }
         if (player.role === "Executioner" && rs.Executioner.target) {
@@ -494,6 +448,7 @@ module.exports = {
             userId,
             rs.Executioner.target,
             gameState.players,
+            player.username,
           );
         }
 
@@ -502,19 +457,16 @@ module.exports = {
     );
 
     const failures = dmResults.filter((r) => !r.success);
-    log(
-      "SETUP",
-      `DM results: success=${dmResults.length - failures.length} failures=${failures.length}`,
-    );
 
     if (failures.length > 0) {
-      const failList = failures
-        .map((r) => `• ${r.username} — ${r.error}`)
-        .join("\n");
-      err("SETUP", `DM failures:\n${failList}`);
+      const failList = failures.map((r) => `• ${r.username}`).join("\n");
+      err(
+        "SETUP",
+        `Setup failed — couldn't reach: ${failures.map((r) => r.username).join(", ")}`,
+      );
       rollbackSetup(gameState);
       await ctx.reply(
-        `❌ <b>Setup failed!</b>\n\nPlayers who couldn't receive their role:\n${failures.map((r) => `• ${r.username}`).join("\n")}\n\n` +
+        `❌ <b>Setup failed!</b>\n\nPlayers who couldn't receive their role:\n${failList}\n\n` +
           `Have each listed player open a private chat with me (/start), then the host can run /setup again.`,
         { parse_mode: "HTML" },
       );
@@ -523,16 +475,15 @@ module.exports = {
 
     gameState.gameReady = true;
     gameState.phase = "lobby";
-    log("SETUP", "Setup complete — gameReady=true phase=lobby");
+    log("SETUP", `✅ Setup complete! Game is ready to start.`);
 
     const alignBreakdown =
       `🔴 Mafia: <b>${mafiaCount}</b>\n` +
       `🟢 Village: <b>${villagerCount}</b>\n` +
       `🔵 Neutral: <b>${neutralCount}</b>`;
-
+    
     await ctx.reply(
-      `✅ <b>Mafiaville is ready!</b>\n\n👥 <b>${playerCount} players</b> assigned roles:\n${alignBreakdown}\n\n` +
-        `📨 Everyone has received their role.\n\nWhen ready, use /startgame.`,
+      `✅ <b>Mafiaville راهي واجدة!</b>\n\n👥 <b>${playerCount} لاعبين</b> وزعنا عليهم الأدوار:\n${alignBreakdown}\n\n` ,
       { parse_mode: "HTML" },
     );
   },
