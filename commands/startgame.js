@@ -435,7 +435,8 @@ module.exports = {
       (issuer && issuer.isHost) || ADMIN_IDS.includes(issuerId);
 
     if (!isAuthorized) {
-      ctx.deleteMessage().catch(() => {});
+      ctx.deleteMessage().catch(() => { });
+      return;
     }
 
     gameState.groupChatId = ctx.chat.id;

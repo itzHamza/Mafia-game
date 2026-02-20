@@ -240,7 +240,8 @@ module.exports = {
     const issuerId = ctx.from.id;
     const issuer = gameState.players.get(issuerId);
     if (!(issuer?.isHost || ADMIN_IDS.includes(issuerId))) {
-      ctx.deleteMessage().catch(() => {});
+      ctx.deleteMessage().catch(() => { });
+      return;
     }
 
     gameState.phase = "setup";

@@ -52,6 +52,12 @@ module.exports = {
       );
     }
 
+    if (gameState.gameReady) {
+      return ctx.reply(
+        "⚠️ Roles have already been assigned. Please wait for the next game.",
+      );
+    }
+
     const isHost = gameState.players.size === 0;
     gameState.players.set(userId, {
       id: userId,

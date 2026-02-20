@@ -41,7 +41,8 @@ module.exports = {
     const isAllowed = ADMIN_IDS.includes(issuerId) || (issuer && issuer.isHost);
 
     if (!isAllowed) {
-      ctx.deleteMessage().catch(() => {});
+      ctx.deleteMessage().catch(() => { });
+      return;
     }
 
     // ── Resolve target ────────────────────────────────────────────────────

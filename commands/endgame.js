@@ -44,7 +44,8 @@ module.exports = {
     const isAllowed = ADMIN_IDS.includes(issuerId) || (issuer && issuer.isHost);
 
     if (!isAllowed) {
-      ctx.deleteMessage().catch(() => {});
+      ctx.deleteMessage().catch(() => { });
+      return;
     }
 
     // Allow endgame in any phase except an empty lobby (nothing to end)

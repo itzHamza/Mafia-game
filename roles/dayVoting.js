@@ -146,8 +146,8 @@ class ExecutionSession {
 
     return (
       `⚖️ <b>الجماعة خرجت ${nominee?.username ?? "?"} للساحة!</b>\n\n` +
-      `${nomineeMention} عندك <b>${this.gameState.settings.votingTime / 2} ثانية</b> باش تبرر روحك وتقنعنا.\n\n` +
-      `✅ مذنب (اعدموه): <b>${yay}</b>   ❌ بريء (سلكوه): <b>${nay}</b>\n\n` +
+      `يا ${nomineeMention} عندك <b>${this.gameState.settings.votingTime / 2} ثانية</b> باش تبرر روحك وتقنعنا.\n\n` +
+      `✅ مذنب (اعدموه): <b>${yay}</b>   \n❌ بريء (سلكوه): <b>${nay}</b>\n\n` +
       `<i>المتهم ما يقدرش يفوطي على روحو، باينة!</i>`
     );
   }
@@ -276,7 +276,11 @@ async function receiveExecutionVote(voterId, choice, ctx, gameState, bot) {
         session.buildMessageText(),
         {
           parse_mode: "HTML",
-          reply_markup: _buildExecKeyboard(session.round, session.nomineeId),
+          reply_markup: _buildExecKeyboard(
+            session.round,
+            session.nomineeId,
+            gameState.sessionId,
+          ),
         },
       )
       .catch(() => {});
