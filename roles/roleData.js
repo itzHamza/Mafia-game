@@ -18,154 +18,144 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ROLES = {
-  // ── MAFIA ─────────────────────────────────────────────────────────────────
+  // ── العصابة (MAFIA) ──────────────────────────────────────────────────────
 
   Godfather: {
-    align: "Mafia",
+    align: "العصابة",
     description:
-      "You're the leader of the Mafiaville Mafia and order a murder each night. " +
-      "Your goal is to have all the townspeople killed.",
-    goal: "Kill the villagers. You win when the number of villagers equals or falls below the number of Mafia.",
+      "أنت هو 'البوص' تاع العصابة. كل ليلة تخير واحد 'يتحشى' وتأمر بقتلو. " +
+      "لازم تصفي قاع ولاد الحومة باش تسيطر على المنطقة.",
+    goal: "تخلص على ولاد الحومة. تربح كي يولي عددكم قد عدد ولاد الحومة أو كثر.",
     image: "godfather.png",
-    isLeader: true, // used in Phase 4 to determine who sends the kill prompt
+    isLeader: true,
   },
   Mafioso: {
-    align: "Mafia",
+    align: "العصابة",
     description:
-      "You're the Godfather's right-hand man. As long as the Godfather is alive, " +
-      "you'll do exclusively his bidding. However, if he meets his demise, you'll replace him.",
-    goal: "Help the Godfather kill the villagers. You win when the number of villagers equals or falls below the number of Mafia.",
+      "أنت هو اليد اليمنى تاع البوص. مادامو حي، دير واش يقولك برك. " +
+      "بصح إذا مات، أنت اللي تولي الشيف في بلاصتو.",
+    goal: "عاون البوص باش تقتل ولاد الحومة. تربحوا كي تسيطروا على الحومة.",
     image: "mafioso.png",
     isLeader: false,
   },
   Framer: {
-    align: "Mafia",
+    align: "العصابة",
     description:
-      "You've moved up the ranks in the Mafiaville Mafia due to your uncanny ability to alter " +
-      "the evidence. Frame innocent villagers each night so the Detective gets the wrong result.",
-    goal: "Help the Godfather kill the villagers. You win when the number of villagers equals or falls below the number of Mafia.",
+      "أنت مول التلاعب والخدع. كل ليلة 'تمارجي' (Frame) واحد من الحومة " +
+      "باش كي يجي لانسبيكتور يفتش عليه، يبان هو اللي راهو داير الموصيبة.",
+    goal: "عاون العصابة تغلط لانسبيكتور وتخلي ولاد الحومة ياكلو بعضاهم.",
     image: "framer.png",
     isLeader: false,
   },
   Silencer: {
-    align: "Mafia",
+    align: "العصابة",
     description:
-      "You go after innocent villagers — but instead of killing them, you silence them, " +
-      "preventing them from participating in the next Town Hall meeting. " +
-      "You can only silence every other night.",
-    goal: "Help the Godfather kill the villagers. You win when the number of villagers equals or falls below the number of Mafia.",
+      "أنت 'الساكت'. في بلاصة ما تقتل، تبلع الفم. اللي تسكتو في الليل " +
+      "ما يقدرش يهدر ولا يفوطي في الاجتماع تاع غدوة. تخدم ليلة بليلة.",
+    goal: "سكت ولاد الحومة باش ما يفيقوش بيكم ويفسدوا عليكم الخطة.",
     image: "silencer.png",
     isLeader: false,
   },
 
-  // ── VILLAGE ───────────────────────────────────────────────────────────────
+  // ── ولاد الحومة (VILLAGE) ─────────────────────────────────────────────────
 
   Doctor: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "You're the resident medical expert in Mafiaville. " +
-      "Each night you can protect one player from the Mafia's attack. " +
-      "You cannot protect the same person two nights in a row.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت هو الطبيب تاع الحومة. كل ليلة تقدر تمنع واحد من الموت وتسلكو " +
+      "من ضربة العصابة. بصح ما تقدرش تسلك نفس الشخص ليلتين ورا بعضاهم.",
+    goal: "عاون ولاد الحومة باش تخرجوا قاع العصابة وتصفيوا الحومة.",
     image: "doctor.png",
   },
   Detective: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "As the criminology expert in the Mafiaville Police Department, " +
-      "you investigate one player each night to determine if they are in the Mafia. " +
-      "Note: the Framer can make innocents look guilty.",
-    goal: "Help the village eliminate all the Mafia.",
+      "لانسبيكتور تاع الحومة. كل ليلة تفتش على واحد باش تعرف إذا " +
+      "راهو من العصابة ولا خاطيه. رد بالك من 'المزور' يقدر يغلطك!",
+    goal: "اكشف شكون هما العصابة باش الحومة تتهنى منهم.",
     image: "detective.png",
   },
   Vigilante: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "Having little faith in the MPD, you've chosen to take matters into your own hands. " +
-      "You can shoot a player each night — but if you kill an innocent villager, " +
-      "you will take your own life out of guilt.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت ما تأمنش بـ 'لانسبيكتور'، رفدت 'المقرودة' (مسدس) وقررت تريغليها بيدك. " +
+      "تقدر تيري على واحد كل ليلة — بصح إذا تيري في واحد بريء، تموت بالندمة والسم.",
+    goal: "اقتل أفراد العصابة بيدك بصح بلا ما تغلط في ولاد الحومة.",
     image: "vigilante.png",
   },
   Mayor: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "You've been elected as the leader of the Mafiaville City Council! " +
-      "You can choose to reveal yourself during the night, granting you an extra vote " +
-      "at Town Hall — but once revealed, the Mafia will target you.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت هو 'المير' (Le Maire) تاع الحومة! تقدر تبين روحك فـ الليل، " +
+      "وهكا يولي صوتك يسوى زوج فـ الفوط. بصح غير تبيّن روحك، العصابة تولي تحوس عليك.",
+    goal: "استعمل النفوذ تاعك باش تخرج العصابة من الحومة.",
     image: "mayor.png",
   },
   Jailer: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "Every other night, you can jail a townsperson overnight — blocking their action " +
-      "and protecting them from attacks. You can also choose to execute your prisoner, " +
-      "but if you execute a villager you permanently lose the ability to execute.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت 'الحبّاس'. ليلة بليلة تقدر تحبس واحد عندك. اللي يكون محبوس " +
+      "ما يقدر يدير والو وما يقدر حد يقيسو. تقدر ثاني 'تعدمو' إذا شكيت فيه.",
+    goal: "احبس أو اعدم أفراد العصابة باش تحمي الحومة.",
     image: "jailer.png",
   },
   Distractor: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "You're naturally very intimidating. When you visit someone's house, " +
-      "they forget their plans for the night and hide in their bedroom. " +
-      "You can only distract every other night.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت إنسان 'واعر' وهدرتك مسموعة. كي تروح لعند واحد في دارو " +
+      "يتلفلو الخيط وينسى واش كان ناوي يدير ديك الليلة. تخدم ليلة بليلة.",
+    goal: "حبس أفراد العصابة باش ما يديروش جرائمهم.",
     image: "distractor.png",
   },
   PI: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "You're a social psychologist who can determine if two players are on the same side — " +
-      "but you won't know which side that is. Choose two players each night to compare.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت 'الفحصيص'. تقدر تعرف إذا زوج عباد راهم في نفس الجهة " +
+      "بصح ما تعرفش أنا جهة (عصابة ولا حومة). خير زوج عباد كل ليلة.",
+    goal: "اعرف شكون اللي راهم مخلطين مع بعضاهم وشكون اللي خاطيهم.",
     image: "pi.png",
   },
   Spy: {
-    align: "Village",
+    align: "الحومة",
     description:
-      "You follow one player all night and find out who, if anyone, they visited. " +
-      "You won't know why they visited, but the implications may be clear.",
-    goal: "Help the village eliminate all the Mafia.",
+      "أنت 'الڤماص' (اللقاج). تتبع واحد كل ليلة وتعرف شكون زار " +
+      "بلا ما يعرف. ما تعرفش واش داروا بصح الحركة تبين كلش.",
+    goal: "اكشف التحركات المشبوهة تاع العصابة في الليل.",
     image: "spy.png",
   },
 
-  // ── NEUTRAL ───────────────────────────────────────────────────────────────
+  // ── طرف ثالث (NEUTRAL) ───────────────────────────────────────────────────
 
   Executioner: {
-    align: "Neutral",
+    align: "محايد",
     description:
-      "You want one specific villager lynched by the town. " +
-      "If they die during the night instead, you become the Jester — " +
-      "and your new goal is to get yourself lynched.",
-    goal: "Get your target lynched at a Town Hall vote.",
+      "عندك 'كونترا' مع واحد من ولاد الحومة ولازم تخليهم يفوطيوا عليه باش يموت. " +
+      "إذا مات في الليل بطريقة وحدة أخرى، تولي أنت 'البهلول' وتتبدل خطتك.",
+    goal: "خلي ولاد الحومة يفوطيوا على الهدف تاعك ويعدموه.",
     image: "executioner.png",
   },
   Jester: {
-    align: "Neutral",
+    align: "محايد",
     description:
-      "All your life people have laughed at you. Now it's time for the ultimate prank: " +
-      "get YOURSELF lynched by the town. If you die any other way, you've failed.",
-    goal: "Get yourself lynched at a Town Hall vote.",
+      "أنت 'البهلول' تاع الحومة. قاع حياتك يضحكوا عليك، دركا حبيت تضحك عليهم: " +
+      "لازم تهبلهم باش يفوطيوا عليك أنت ويموتوك. إذا مت بأي طريقة ثانية، خسرت.",
+    goal: "هبلهم باش يفوطيوا عليك وتتعدم في الساحة.",
     image: "jester.png",
   },
   Baiter: {
-    align: "Neutral",
+    align: "محايد",
     description:
-      "An angry, wheelchair-bound army veteran, you've rigged your house with explosives. " +
-      "Anyone who visits you at night will be blown up. " +
-      "Bait three people and survive to the end of the game.",
-    goal: "Bait three players and survive to the end.",
+      "شيخ كبير 'مڤاردي' في دارو ومعاه 'البارود'. اللي يجي لعندك في الليل " +
+      "يطرطق عليه البارود. لازم تفرڤع 3 عباد وتعيش لآخر اللعبة باش تربح.",
+    goal: "فرڤع 3 عباد وأبقى حي حتى لآخر اللعبة.",
     image: "baiter.png",
   },
   Arsonist: {
-    align: "Neutral",
+    align: "محايد",
     description:
-      "Like Nero fiddled over burning Rome, you play the flute over Mafiaville in flames. " +
-      "Each night you can douse a player in petrol. When you choose to ignite, " +
-      "all doused players burn simultaneously.",
-    goal: "Kill everyone — be the last one standing.",
+      "أنت 'الشاعلي' (مول النار). كل ليلة ترش ليسانس على واحد بلا ما يفيق. " +
+      "النهار اللي تحب، تشعل البريكي وتحرقهم قاع في ضربة وحدة.",
+    goal: "احرق قاع الناس وأبقى أنت الأخير وحدك في الحومة.",
     image: "arsonist.png",
   },
 };

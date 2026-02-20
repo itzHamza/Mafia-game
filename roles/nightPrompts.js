@@ -1,23 +1,16 @@
 /**
- * roles/nightPrompts.js
+ * roles/nightPrompts.js — DEBUG BUILD
  *
- * Night-phase DM prompt senders for every role.
+ * Key log tags to watch:
+ *   [PROMPT] SEND  — about to call bot.telegram.sendMessage (the DM with buttons)
+ *   [PROMPT] SENT  — sendMessage returned successfully — look at the ms value!
+ *   [PROMPT] FAIL  — sendMessage threw an error
+ *   [PROMPT] PRESS — player pressed a button (action registry resolved)
+ *   [PROMPT] TIMEOUT — night timer fired before player responded
+ *   [PROMPT] EDIT  — collapsing the keyboard after timeout
  *
- * Discord equivalent: each role's prompt(user) and night(user) methods
- * in GameData's mafiaRoles / villageRoles / neutralRoles objects.
- *
- * Core replacement:
- *   Discord: user.send(embed) → prompt.awaitReactions(filter, { time })
- *              → emoji.first().emoji.name → resolve(selection)
- *   Telegram: bot.telegram.sendMessage(userId, text, { reply_markup: keyboard })
- *              → user presses button → bot.action() → actionRegistry.resolve(key, value)
- *              → Promise resolves with the selection
- *
- * Each exported collect*() function:
- *   - Sends an inline keyboard DM to the player
- *   - Returns a Promise<{ action, choice }|{}> (same shape as Discord's night() return)
- *   - Resolves immediately with {} if role has no action this night
- *   - Resolves with null-equivalent {} on timeout (no action taken)
+ * If you see SEND without a matching SENT/FAIL for >5 seconds, that specific
+ * sendMessage call is the source of the socket hang.
  */
 
 "use strict";
@@ -25,25 +18,26 @@
 const actionRegistry = require("./actionRegistry");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GENERIC PROMPT HELPER
-// Discord equivalent: user.send(embed with reactions) → prompt.awaitReactions(...)
+// DEBUG LOGGER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Send an inline keyboard DM and return a Promise that resolves with the
- * player's selection string, or null if they skip / time out.
- *
- * @param {Object} opts
- * @param {Object}   opts.bot
- * @param {number}   opts.userId     Telegram user ID of the acting player.
- * @param {string}   opts.text       HTML message body.
- * @param {Array}    opts.options    [{ label: string, value: string }]
- * @param {string}   opts.prefix     Registry key prefix (e.g. 'na', 'na_pi1').
- * @param {number}   opts.round      Current game round number.
- * @param {number}   opts.timeout    Seconds before auto-resolving with null.
- * @param {Object}   opts.gameState
- * @returns {Promise<string|null>}  The selected value string, or null.
- */
+function ts() {
+  return new Date().toISOString().replace("T", " ").slice(0, 23);
+}
+function log(tag, msg) {
+  console.log(`[${ts()}] [${tag}] ${msg}`);
+}
+function warn(tag, msg) {
+  console.warn(`[${ts()}] [${tag}] ⚠️  ${msg}`);
+}
+function err(tag, msg) {
+  console.error(`[${ts()}] [${tag}] ❌ ${msg}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GENERIC SELECTION PROMPT — all timing lives here
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function sendSelectionPrompt({
   bot,
   userId,
@@ -55,86 +49,120 @@ async function sendSelectionPrompt({
   gameState,
 }) {
   const key = `${prefix}:${round}:${userId}`;
+  log(
+    "PROMPT",
+    `Building keyboard key="${key}" options=${options.length} timeout=${timeout}s`,
+  );
 
-  // Build Telegram inline keyboard — one button per row for readability.
-  // Discord equivalent: prompt.react(emoji) for each option.
-    let inline_keyboard;
+  let inline_keyboard;
+  try {
+    inline_keyboard = options.map((opt) => [
+      { text: opt.label, callback_data: `${key}:${opt.value}` },
+    ]);
+  } catch (e) {
+    err("PROMPT", `Failed to build keyboard key="${key}" — ${e.message}`);
+    return null;
+  }
+
+  return new Promise(async (resolve) => {
+    let timer;
+    let sentMsgId = null;
+
+    // Register BEFORE sending to avoid race conditions
+    actionRegistry.register(key, (value) => {
+      const elapsed = Date.now() - sendStart;
+      log("PROMPT", `PRESS key="${key}" value="${value}" elapsed=${elapsed}ms`);
+      clearTimeout(timer);
+      resolve(value === "skip" ? null : value);
+    });
+
+    log("PROMPT", `SEND userId=${userId} key="${key}"`);
+    const sendStart = Date.now();
+
     try {
-      inline_keyboard = options.map((opt) => [
-        {
-          text: opt.label,
-          callback_data: `${key}:${opt.value}`,
-        },
-      ]);
-    } catch (err) {
-      console.error("Failed to build night prompt keyboard:", err.message);
-      return null;
-    }
-
-    return new Promise(async (resolve) => {
-      let timer;
-      let sentMsgId = null;
-
-      // Register resolver BEFORE sending so there's no race condition
-      // between the message arriving and a fast button press.
-      actionRegistry.register(key, (value) => {
-        clearTimeout(timer);
-        resolve(value === "skip" ? null : value);
+      const sent = await bot.telegram.sendMessage(userId, text, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard },
       });
+      const sendMs = Date.now() - sendStart;
+      log(
+        "PROMPT",
+        `SENT userId=${userId} key="${key}" msgId=${sent.message_id} in ${sendMs}ms`,
+      );
 
-      // Send the prompt DM
-      // Discord equivalent: user.send(embed) → saves the returned message as `prompt`
-      try {
-        const sent = await bot.telegram.sendMessage(userId, text, {
-          parse_mode: "HTML",
-          reply_markup: { inline_keyboard },
-        });
-        sentMsgId = sent.message_id;
-        // Track so we can disable the keyboard on timeout
-        gameState.activeNightPrompts.set(userId, sentMsgId);
-      } catch {
-        // Most common cause: user never started a private chat with the bot.
-        // This should have been caught in /setup, but handle it gracefully.
-        actionRegistry.deregister(key);
-        return resolve(null);
+      if (sendMs > 3000) {
+        warn(
+          "PROMPT",
+          `SLOW SEND userId=${userId} took ${sendMs}ms — possible socket congestion`,
+        );
       }
 
-      // Night timer — mirrors Discord's awaitReactions { time: nightTime * 1000 }
-      timer = setTimeout(async () => {
-        if (!actionRegistry.has(key)) return; // already resolved by button press
-        actionRegistry.deregister(key);
+      sentMsgId = sent.message_id;
+      gameState.activeNightPrompts.set(userId, sentMsgId);
+    } catch (e) {
+      const sendMs = Date.now() - sendStart;
+      err(
+        "PROMPT",
+        `FAIL userId=${userId} key="${key}" after ${sendMs}ms — ${e.message}`,
+      );
+      actionRegistry.deregister(key);
+      return resolve(null);
+    }
 
-        // Disable the keyboard so stale buttons can't fire next round.
-        // Discord equivalent: N/A — Discord message reactions became inert automatically.
-        if (sentMsgId) {
-          await bot.telegram
-            .editMessageReplyMarkup(userId, sentMsgId, undefined, {
-              inline_keyboard: [],
-            })
-            .catch(() => {});
-        }
+    // Night timer
+    timer = setTimeout(async () => {
+      if (!actionRegistry.has(key)) {
+        log(
+          "PROMPT",
+          `TIMEOUT key="${key}" — already resolved by button press`,
+        );
+        return;
+      }
+      log("PROMPT", `TIMEOUT key="${key}" userId=${userId} — deregistering`);
+      actionRegistry.deregister(key);
 
+      if (sentMsgId) {
+        log(
+          "PROMPT",
+          `EDIT collapsing keyboard msgId=${sentMsgId} userId=${userId}`,
+        );
+        const t = Date.now();
         await bot.telegram
-          .sendMessage(userId, "⏰ Time's up! No action taken this night.")
-          .catch(() => {});
+          .editMessageReplyMarkup(userId, sentMsgId, undefined, {
+            inline_keyboard: [],
+          })
+          .catch((e) =>
+            warn(
+              "PROMPT",
+              `EDIT failed after ${Date.now() - t}ms — ${e.message}`,
+            ),
+          );
+        log("PROMPT", `EDIT done in ${Date.now() - t}ms`);
+      }
 
-        resolve(null);
-      }, timeout * 1000);
-    });
+      const t2 = Date.now();
+      await bot.telegram
+        .sendMessage(userId, "⏰ Time's up! No action taken this night.")
+        .catch((e) =>
+          warn(
+            "PROMPT",
+            `Timeout notice DM failed after ${Date.now() - t2}ms — ${e.message}`,
+          ),
+        );
+      log(
+        "PROMPT",
+        `Timeout notice sent to userId=${userId} in ${Date.now() - t2}ms`,
+      );
+
+      resolve(null);
+    }, timeout * 1000);
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHARED HELPERS
+// SHARED HELPERS (unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Build the standard options array for a single-player selection prompt.
- * Includes a Skip button at the end.
- *
- * @param {number[]} targetIds   Filtered list of eligible target user IDs.
- * @param {Object}   gameState
- * @returns {Array<{label: string, value: string}>}
- */
 function buildPlayerOptions(targetIds, gameState) {
   const opts = targetIds.map((id, i) => ({
     label: `${gameState.emojiArray[i]} ${gameState.players.get(id).username}`,
@@ -144,21 +172,13 @@ function buildPlayerOptions(targetIds, gameState) {
   return opts;
 }
 
-/**
- * Check if a selection targets the Baiter and return the baited action if so.
- * Discord equivalent: the inline ternary in each role's night() resolver:
- *   resolve(players.get(selection).role === "Baiter"
- *     ? { action: "baited", choice: userids.get(user.id) }
- *     : { action: <role_action>, choice: selection })
- *
- * @param {number} targetId   The chosen target's user ID.
- * @param {number} actorId    The acting player's user ID.
- * @param {Object} gameState
- * @returns {{ action: 'baited', choice: number }|null}  null if target is not Baiter.
- */
 function checkBaiter(targetId, actorId, gameState) {
   const target = gameState.players.get(targetId);
   if (target && target.role === "Baiter") {
+    log(
+      "PROMPT",
+      `checkBaiter: targetId=${targetId} IS the Baiter — actorId=${actorId} gets blown up`,
+    );
     return { action: "baited", choice: actorId };
   }
   return null;
@@ -168,18 +188,16 @@ function checkBaiter(targetId, actorId, gameState) {
 // MAFIA ROLE COLLECTORS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Godfather / acting-Godfather kill prompt.
- * Discord equivalent: mafiaRoles["Godfather"].prompt(user) + night(user)
- * Target pool: alive non-Mafia players only.
- */
 async function collectKill(bot, userId, round, gameState) {
+  log("COLLECT", `collectKill userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => {
     const p = gameState.players.get(id);
     return id !== userId && p && p.align !== "Mafia";
   });
-
-  if (targetIds.length === 0) return {};
+  if (targetIds.length === 0) {
+    log("COLLECT", `collectKill: no targets for userId=${userId}`);
+    return {};
+  }
 
   const selection = await sendSelectionPrompt({
     bot,
@@ -188,9 +206,7 @@ async function collectKill(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🔴 <b>Night ${round} — Choose your kill target</b>\n\n` +
-      `Select a player to eliminate tonight:`,
+    text: `🔴 <b>Night ${round} — Choose your kill target</b>\n\nSelect a player to eliminate tonight:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -202,7 +218,6 @@ async function collectKill(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -214,7 +229,6 @@ async function collectKill(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -226,17 +240,12 @@ async function collectKill(bot, userId, round, gameState) {
   return { action: "kill", choice: targetId };
 }
 
-/**
- * Framer prompt.
- * Discord equivalent: mafiaRoles["Framer"].prompt(user) + night(user)
- * Target pool: alive non-Mafia players. Makes Detective see target as Mafia.
- */
 async function collectFrame(bot, userId, round, gameState) {
+  log("COLLECT", `collectFrame userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => {
     const p = gameState.players.get(id);
     return id !== userId && p && p.align !== "Mafia";
   });
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -246,9 +255,7 @@ async function collectFrame(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🔴 <b>Night ${round} — Choose your frame target</b>\n\n` +
-      `Select a player to frame (they will appear as Mafia to the Detective):`,
+    text: `🔴 <b>Night ${round} — Choose your frame target</b>\n\nSelect a player to frame:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -258,7 +265,6 @@ async function collectFrame(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -270,7 +276,6 @@ async function collectFrame(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -282,36 +287,22 @@ async function collectFrame(bot, userId, round, gameState) {
   return { action: "frame", choice: targetId };
 }
 
-/**
- * Silencer prompt.
- * Discord equivalent: mafiaRoles["Silencer"].prompt(user) + night(user)
- *
- * Two restrictions ported exactly from original:
- *   1. Can only silence every OTHER night (workedLastNight flag)
- *   2. Cannot silence the same person twice in the entire game (silencedSoFar list)
- */
 async function collectSilence(bot, userId, round, gameState) {
+  log("COLLECT", `collectSilence userId=${userId}`);
   const rs = gameState.roleState.Silencer;
 
-  // Alternating-night restriction
-  // Discord equivalent: if (that.workedLastNight) { resolve(""); return; }
   if (rs.workedLastNight) {
+    log("COLLECT", `collectSilence: Silencer on cooldown userId=${userId}`);
     rs.workedLastNight = false;
     await bot.telegram
-      .sendMessage(
-        userId,
-        "😴 You're too tired to silence anyone tonight — get some rest.",
-      )
+      .sendMessage(userId, "😴 You're too tired to silence anyone tonight.")
       .catch(() => {});
     return {};
   }
 
-  // Filter out already-silenced players and self
-  // Discord equivalent: playersAlive.filter(t => t !== self && !silencedSoFar.includes(t))
   const targetIds = gameState.playersAlive.filter(
     (id) => id !== userId && !rs.silencedSoFar.includes(id),
   );
-
   if (targetIds.length === 0) {
     await bot.telegram
       .sendMessage(userId, "No eligible targets to silence tonight.")
@@ -326,9 +317,7 @@ async function collectSilence(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🔴 <b>Night ${round} — Choose your silence target</b>\n\n` +
-      `Select a player to silence (they cannot speak at tomorrow's meeting):`,
+    text: `🔴 <b>Night ${round} — Choose your silence target</b>\n\nSelect a player to silence:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -338,7 +327,6 @@ async function collectSilence(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -350,11 +338,9 @@ async function collectSilence(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   rs.workedLastNight = true;
   rs.silencedSoFar.push(targetId);
-
   await bot.telegram
     .sendMessage(
       userId,
@@ -369,18 +355,10 @@ async function collectSilence(bot, userId, round, gameState) {
 // VILLAGE ROLE COLLECTORS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Doctor heal prompt.
- * Discord equivalent: villageRoles["Doctor"].prompt(user) + night(user)
- * Restriction: cannot heal the same person two nights in a row (lastChoice).
- * Note: Doctor CAN heal themselves (no self-exclusion).
- */
 async function collectHeal(bot, userId, round, gameState) {
+  log("COLLECT", `collectHeal userId=${userId}`);
   const rs = gameState.roleState.Doctor;
-
-  // Exclude last night's choice — Discord equivalent: filter(t => t !== that.lastChoice)
   const targetIds = gameState.playersAlive.filter((id) => id !== rs.lastChoice);
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -390,9 +368,7 @@ async function collectHeal(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Choose who to protect</b>\n\n` +
-      `Select a player to save from a Mafia attack tonight:`,
+    text: `🟢 <b>Night ${round} — Choose who to protect</b>\n\nSelect a player to save:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -402,10 +378,8 @@ async function collectHeal(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
-  rs.lastChoice = targetId; // Set in prompt layer — Discord equivalent
-
+  rs.lastChoice = targetId;
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
     await bot.telegram
@@ -416,7 +390,6 @@ async function collectHeal(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -428,14 +401,9 @@ async function collectHeal(bot, userId, round, gameState) {
   return { action: "heal", choice: targetId };
 }
 
-/**
- * Detective investigate prompt.
- * Discord equivalent: villageRoles["Detective"].prompt(user) + night(user)
- * Target pool: any alive player except self.
- */
 async function collectCheck(bot, userId, round, gameState) {
+  log("COLLECT", `collectCheck userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -445,9 +413,7 @@ async function collectCheck(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Choose who to investigate</b>\n\n` +
-      `Select a player to determine if they are in the Mafia:`,
+    text: `🟢 <b>Night ${round} — Choose who to investigate</b>\n\nSelect a player:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -457,7 +423,6 @@ async function collectCheck(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -469,7 +434,6 @@ async function collectCheck(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -481,14 +445,9 @@ async function collectCheck(bot, userId, round, gameState) {
   return { action: "check", choice: targetId };
 }
 
-/**
- * Vigilante shoot prompt.
- * Discord equivalent: villageRoles["Vigilante"].prompt(user) + night(user)
- * Warning: killing a villager causes the Vigilante to die of guilt.
- */
 async function collectShoot(bot, userId, round, gameState) {
+  log("COLLECT", `collectShoot userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -498,10 +457,7 @@ async function collectShoot(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Choose who to shoot</b>\n\n` +
-      `⚠️ <i>Warning: shooting a villager will cause you to die of guilt!</i>\n\n` +
-      `Select a player to shoot:`,
+    text: `🟢 <b>Night ${round} — Choose who to shoot</b>\n\n⚠️ <i>Shooting a villager causes you to die of guilt!</i>\n\nSelect a player:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -511,7 +467,6 @@ async function collectShoot(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -523,7 +478,6 @@ async function collectShoot(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -535,19 +489,13 @@ async function collectShoot(bot, userId, round, gameState) {
   return { action: "kill-vigil", choice: targetId };
 }
 
-/**
- * Mayor reveal prompt.
- * Discord equivalent: villageRoles["Mayor"].prompt(user) + night(user)
- * Y/N choice: reveal self as Mayor tomorrow, gaining an extra vote.
- * Uses na_mayor: prefix to distinguish from standard target selection.
- */
 async function collectReveal(bot, userId, round, gameState) {
+  log("COLLECT", `collectReveal userId=${userId}`);
   const rs = gameState.roleState.Mayor;
-
-  // Already revealed — no action needed
-  if (rs.revealed) return {};
-
-  // If silenced last round, the reveal is reset (Discord equivalent)
+  if (rs.revealed) {
+    log("COLLECT", `collectReveal: Mayor already revealed userId=${userId}`);
+    return {};
+  }
   const player = gameState.players.get(userId);
   if (player && player.silencedLastRound) rs.revealed = false;
 
@@ -558,10 +506,7 @@ async function collectReveal(bot, userId, round, gameState) {
     prefix: "na_mayor",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Mayor Decision</b>\n\n` +
-      `Do you want to reveal yourself as the Mayor at tomorrow's meeting?\n\n` +
-      `<i>Revealing grants you an extra vote but makes you a target.</i>`,
+    text: `🟢 <b>Night ${round} — Mayor Decision</b>\n\nReveal yourself at tomorrow's meeting?`,
     options: [
       { label: "✅ Yes — reveal myself tomorrow", value: "yes" },
       { label: "❌ No — stay hidden", value: "no" },
@@ -574,11 +519,9 @@ async function collectReveal(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
-  // selection === "yes"
   rs.revealed = true;
   gameState.mayor = userId;
-
+  log("COLLECT", `Mayor revealed userId=${userId}`);
   await bot.telegram
     .sendMessage(
       userId,
@@ -589,28 +532,19 @@ async function collectReveal(bot, userId, round, gameState) {
   return { action: "mayor-reveal" };
 }
 
-/**
- * Distractor prompt.
- * Discord equivalent: villageRoles["Distractor"].prompt(user) + night(user)
- * Alternating night restriction (same as Silencer's workedLastNight).
- */
 async function collectDistract(bot, userId, round, gameState) {
+  log("COLLECT", `collectDistract userId=${userId}`);
   const rs = gameState.roleState.Distractor;
-
-  // Alternating-night restriction
   if (rs.workedLastNight) {
+    log("COLLECT", `collectDistract: on cooldown userId=${userId}`);
     rs.workedLastNight = false;
     await bot.telegram
-      .sendMessage(
-        userId,
-        "😴 You're too tired to distract anyone tonight — get some rest.",
-      )
+      .sendMessage(userId, "😴 You're too tired to distract anyone tonight.")
       .catch(() => {});
     return {};
   }
 
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -620,9 +554,7 @@ async function collectDistract(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Choose who to distract</b>\n\n` +
-      `Select a player to distract (their action will fail tonight):`,
+    text: `🟢 <b>Night ${round} — Choose who to distract</b>\n\nSelect a player:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -632,7 +564,6 @@ async function collectDistract(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -644,10 +575,8 @@ async function collectDistract(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   rs.workedLastNight = true;
-
   await bot.telegram
     .sendMessage(
       userId,
@@ -658,22 +587,9 @@ async function collectDistract(bot, userId, round, gameState) {
   return { action: "distract", choice: targetId };
 }
 
-/**
- * PI double-investigation prompt.
- * Discord equivalent: villageRoles["PI"].prompt(user) + night(user)
- *
- * Two selections required. Ported as two sequential Promises:
- *   Step 1: uses na_pi1: prefix → resolves with first target ID
- *   Step 2: uses na: prefix     → resolves with second target ID
- *           (first target is excluded from second prompt's options)
- *
- * Discord equivalent: awaitReactions collected up to 2 emoji reactions.
- * The order was determined by emoji.first(2), which could be unreliable.
- * Sequential prompts are cleaner and intentional.
- */
 async function collectPI(bot, userId, round, gameState) {
+  log("COLLECT", `collectPI userId=${userId}`);
   const eligible = gameState.playersAlive.filter((id) => id !== userId);
-
   if (eligible.length < 2) {
     await bot.telegram
       .sendMessage(userId, "⚠️ Not enough players alive to compare.")
@@ -681,7 +597,6 @@ async function collectPI(bot, userId, round, gameState) {
     return {};
   }
 
-  // ── Step 1: First target ─────────────────────────────────────────────────
   const sel1 = await sendSelectionPrompt({
     bot,
     userId,
@@ -689,9 +604,7 @@ async function collectPI(bot, userId, round, gameState) {
     prefix: "na_pi1",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — PI Investigation (1/2)</b>\n\n` +
-      `Select the <b>first</b> player to compare:`,
+    text: `🟢 <b>Night ${round} — PI Investigation (1/2)</b>\n\nSelect the <b>first</b> player:`,
     options: buildPlayerOptions(eligible, gameState),
   });
 
@@ -701,7 +614,6 @@ async function collectPI(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const target1Id = Number(sel1);
   const baited1 = checkBaiter(target1Id, userId, gameState);
   if (baited1) {
@@ -714,9 +626,7 @@ async function collectPI(bot, userId, round, gameState) {
     return baited1;
   }
 
-  // ── Step 2: Second target (excluding first) ───────────────────────────────
   const eligible2 = eligible.filter((id) => id !== target1Id);
-
   if (eligible2.length === 0) {
     await bot.telegram
       .sendMessage(userId, "⚠️ No remaining players to compare against.")
@@ -730,12 +640,9 @@ async function collectPI(bot, userId, round, gameState) {
     userId,
     round,
     prefix: "na",
-    timeout: Math.ceil(gameState.settings.nightTime / 2), // Shorter window for step 2
+    timeout: Math.ceil(gameState.settings.nightTime / 2),
     gameState,
-    text:
-      `🟢 <b>Night ${round} — PI Investigation (2/2)</b>\n\n` +
-      `Comparing against: <b>${target1Name}</b>\n\n` +
-      `Select the <b>second</b> player:`,
+    text: `🟢 <b>Night ${round} — PI Investigation (2/2)</b>\n\nComparing against: <b>${target1Name}</b>\n\nSelect the <b>second</b> player:`,
     options: buildPlayerOptions(eligible2, gameState),
   });
 
@@ -748,7 +655,6 @@ async function collectPI(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const target2Id = Number(sel2);
   const baited2 = checkBaiter(target2Id, userId, gameState);
   if (baited2) {
@@ -772,14 +678,9 @@ async function collectPI(bot, userId, round, gameState) {
   return { action: "pi-check", choice: [target1Id, target2Id] };
 }
 
-/**
- * Spy watch prompt.
- * Discord equivalent: villageRoles["Spy"].prompt(user) + night(user)
- * Finds out who the watched player visited (if anyone).
- */
 async function collectSpy(bot, userId, round, gameState) {
+  log("COLLECT", `collectSpy userId=${userId}`);
   const targetIds = gameState.playersAlive.filter((id) => id !== userId);
-
   if (targetIds.length === 0) return {};
 
   const selection = await sendSelectionPrompt({
@@ -789,9 +690,7 @@ async function collectSpy(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🟢 <b>Night ${round} — Choose who to watch</b>\n\n` +
-      `Select a player to follow and discover who they visited:`,
+    text: `🟢 <b>Night ${round} — Choose who to watch</b>\n\nSelect a player to follow:`,
     options: buildPlayerOptions(targetIds, gameState),
   });
 
@@ -801,7 +700,6 @@ async function collectSpy(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
   const targetId = Number(selection);
   const baited = checkBaiter(targetId, userId, gameState);
   if (baited) {
@@ -813,7 +711,6 @@ async function collectSpy(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
   const target = gameState.players.get(targetId);
   await bot.telegram
     .sendMessage(
@@ -825,25 +722,20 @@ async function collectSpy(bot, userId, round, gameState) {
   return { action: "spy-check", choice: targetId };
 }
 
-/**
- * Jailer execute prompt (night phase only).
- * Discord equivalent: villageRoles["Jailer"].night(user)
- *
- * Note: The daytime jail SELECTION prompt (who to imprison) is part of the
- * day cycle and will be ported in Phase 5. This function only handles the
- * nightly Y/N decision to execute the already-selected prisoner.
- *
- * Uses na_jailer: prefix to distinguish from standard target selection.
- */
 async function collectJailerKill(bot, userId, round, gameState) {
+  log("COLLECT", `collectJailerKill userId=${userId}`);
   const rs = gameState.roleState.Jailer;
-
-  // No prisoner, or lost execute ability by killing a villager
-  // Discord equivalent: if (that.killsLeft !== 0 && that.lastSelection)
-  if (rs.killsLeft === 0 || !rs.lastSelection) return {};
+  if (rs.killsLeft === 0 || !rs.lastSelection) {
+    log(
+      "COLLECT",
+      `collectJailerKill: no execute ability/prisoner userId=${userId}`,
+    );
+    return {};
+  }
 
   const prisoner = gameState.players.get(rs.lastSelection);
   if (!prisoner) return {};
+  log("COLLECT", `collectJailerKill: prisoner=${prisoner.username}`);
 
   const selection = await sendSelectionPrompt({
     bot,
@@ -852,10 +744,7 @@ async function collectJailerKill(bot, userId, round, gameState) {
     prefix: "na_jailer",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `⛓ <b>Night ${round} — Execute your prisoner?</b>\n\n` +
-      `Your prisoner is: <b>${prisoner.username}</b>\n\n` +
-      `Do you want to execute them tonight?`,
+    text: `⛓ <b>Night ${round} — Execute your prisoner?</b>\n\nYour prisoner is: <b>${prisoner.username}</b>\n\nDo you want to execute them tonight?`,
     options: [
       { label: `⚖️ Yes — execute ${prisoner.username}`, value: "yes" },
       { label: "🔓 No — release them", value: "no" },
@@ -872,7 +761,7 @@ async function collectJailerKill(bot, userId, round, gameState) {
       .catch(() => {});
     return {};
   }
-
+  log("COLLECT", `collectJailerKill: executing prisoner=${prisoner.username}`);
   await bot.telegram
     .sendMessage(
       userId,
@@ -887,35 +776,24 @@ async function collectJailerKill(bot, userId, round, gameState) {
 // NEUTRAL ROLE COLLECTORS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Arsonist douse/ignite prompt.
- * Discord equivalent: neutralRoles["Arsonist"].prompt(user) + night(user)
- *
- * Two action types:
- *   - Douse: add a player to the doused list for a future ignite
- *   - Ignite: kill ALL currently doused players simultaneously
- *
- * In the original, ignite was represented by the player selecting themselves.
- * Here we use an explicit "IGNITE" button for clarity.
- *
- * Note: the doused list is updated here (prompt layer), matching the original
- * where that.doused.push(selection) happened inside prompt().
- */
 async function collectArsonist(bot, userId, round, gameState) {
+  log("COLLECT", `collectArsonist userId=${userId}`);
   const rs = gameState.roleState.Arsonist;
   const doused = rs.doused;
-
-  // Eligible to douse: alive players not yet doused, not self
   const dousable = gameState.playersAlive.filter(
     (id) => id !== userId && !doused.includes(id),
   );
-
   const dousedNames =
     doused.length > 0
       ? doused
           .map((id) => gameState.players.get(id)?.username ?? "?")
           .join(", ")
       : "none";
+
+  log(
+    "COLLECT",
+    `collectArsonist: doused=[${dousedNames}] dousable=${dousable.length}`,
+  );
 
   const options = [
     {
@@ -936,10 +814,7 @@ async function collectArsonist(bot, userId, round, gameState) {
     prefix: "na",
     timeout: gameState.settings.nightTime,
     gameState,
-    text:
-      `🔵 <b>Night ${round} — Arsonist Action</b>\n\n` +
-      `Currently doused: <b>${dousedNames}</b>\n\n` +
-      `Choose your action:`,
+    text: `🔵 <b>Night ${round} — Arsonist Action</b>\n\nCurrently doused: <b>${dousedNames}</b>\n\nChoose your action:`,
     options,
   });
 
@@ -957,6 +832,7 @@ async function collectArsonist(bot, userId, round, gameState) {
         .catch(() => {});
       return {};
     }
+    log("COLLECT", `collectArsonist: IGNITE triggered userId=${userId}`);
     await bot.telegram
       .sendMessage(
         userId,
@@ -977,10 +853,12 @@ async function collectArsonist(bot, userId, round, gameState) {
       .catch(() => {});
     return baited;
   }
-
-  // Record douse in prompt layer — matching the original's that.doused.push(selection)
   rs.doused.push(targetId);
   const target = gameState.players.get(targetId);
+  log(
+    "COLLECT",
+    `collectArsonist: doused userId=${targetId} username=${target?.username}`,
+  );
   await bot.telegram
     .sendMessage(userId, `💧 You doused <b>${target.username}</b> tonight.`, {
       parse_mode: "HTML",
@@ -991,39 +869,30 @@ async function collectArsonist(bot, userId, round, gameState) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN DISPATCHER
-// Discord equivalent: the night(user) method on each role object,
-// called in the nightActions() for loop in start.js
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Dispatch to the correct role collector for the given player.
- *
- * Godfather succession: if the original Godfather is dead, the hierarchy
- * (Mafioso → Framer → Silencer) takes over. We use getActiveGodfather()
- * instead of individual isGodfather flags (Discord's approach).
- *
- * Discord equivalent:
- *   gamedata[`${player.align.toLowerCase()}Roles`][player.role].night(user)
- *
- * @param {Object} bot
- * @param {number} userId
- * @param {number} round
- * @param {Object} gameState
- * @returns {Promise<{action: string, choice: any}|{}>}
- */
 async function collectNightAction(bot, userId, round, gameState) {
   const player = gameState.players.get(userId);
-  if (!player || !player.isAlive) return {};
+  if (!player || !player.isAlive) {
+    warn(
+      "COLLECT",
+      `collectNightAction: player userId=${userId} not found or dead`,
+    );
+    return {};
+  }
 
   const role = player.role;
+  log(
+    "COLLECT",
+    `collectNightAction userId=${userId} username=${player.username} role=${role}`,
+  );
 
-  // ── Godfather succession ─────────────────────────────────────────────────
-  // Discord equivalent: each Mafia role checked isGodfather flag individually.
-  // mafiaRoles["Mafioso"].isGodfather was set by updateGodfather() on death.
-  // Here we check centrally: if this player is the active GF, they get kill prompt.
   const activeGodfatherId = gameState.getActiveGodfather();
   if (activeGodfatherId === userId && role !== "Godfather") {
-    // This non-Godfather Mafia player has been promoted — use kill prompt
+    log(
+      "COLLECT",
+      `collectNightAction: userId=${userId} is ACTING Godfather (role=${role})`,
+    );
     await bot.telegram
       .sendMessage(
         userId,
@@ -1035,20 +904,15 @@ async function collectNightAction(bot, userId, round, gameState) {
   }
 
   switch (role) {
-    // ── Mafia ──────────────────────────────────────────────────────────────
     case "Godfather":
-      // Original Godfather (if alive)
       return collectKill(bot, userId, round, gameState);
     case "Mafioso":
-      // No action when not acting as GF
-      // Discord equivalent: if (!that.isGodfather) resolve({})
+      log("COLLECT", `collectNightAction: Mafioso no action userId=${userId}`);
       return {};
     case "Framer":
       return collectFrame(bot, userId, round, gameState);
     case "Silencer":
       return collectSilence(bot, userId, round, gameState);
-
-    // ── Village ────────────────────────────────────────────────────────────
     case "Doctor":
       return collectHeal(bot, userId, round, gameState);
     case "Detective":
@@ -1065,17 +929,21 @@ async function collectNightAction(bot, userId, round, gameState) {
       return collectPI(bot, userId, round, gameState);
     case "Spy":
       return collectSpy(bot, userId, round, gameState);
-
-    // ── Neutral ────────────────────────────────────────────────────────────
     case "Arsonist":
       return collectArsonist(bot, userId, round, gameState);
     case "Executioner":
     case "Jester":
     case "Baiter":
-      // No nightly action — Discord equivalent: night(user) { resolve({}); }
+      log(
+        "COLLECT",
+        `collectNightAction: ${role} has no night action userId=${userId}`,
+      );
       return {};
-
     default:
+      warn(
+        "COLLECT",
+        `collectNightAction: unknown role="${role}" userId=${userId}`,
+      );
       return {};
   }
 }

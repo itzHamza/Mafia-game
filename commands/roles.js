@@ -28,136 +28,136 @@ const IMAGES_DIR = path.join(__dirname, "..", "images");
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ROLES = [
-  // ── MAFIA ──────────────────────────────────────────────────────────────────
+  // ── العصابة (MAFIA) ────────────────────────────────────────────────────────
   {
-    name: "Godfather",
-    align: "Mafia",
+    name: "البوص (Godfather)",
+    align: "العصابة",
     emoji: "🔴",
     description:
-      "Commands the Mafia from the shadows — immune to investigation.",
+      "يسير في 'الخدمة' من البعيد وما يبانش — لانسبيكتور ما يقدرش يفيق بيه كاع.",
     imageFile: "godfather.png",
   },
   {
-    name: "Mafioso",
-    align: "Mafia",
+    name: "الذراع الأيمن (Mafioso)",
+    align: "العصابة",
     emoji: "🔴",
-    description: "Carries out the Godfather's kill order each night.",
+    description: "هو اللي ينفذ الأوامر تاع البوص ويصفيها لواحد كل ليلة.",
     imageFile: "mafioso.png",
   },
   {
-    name: "Framer",
-    align: "Mafia",
+    name: "المزوّر (Framer)",
+    align: "العصابة",
     emoji: "🔴",
     description:
-      "Plants false evidence — making innocents look guilty to investigators.",
+      "يلصق التهم باطل — يخلي ولاد الحومة Innocent يبانوا غلّاطين عند لانسبيكتور.",
     imageFile: "framer.png",
   },
   {
-    name: "Silencer",
-    align: "Mafia",
+    name: "الساكت (Silencer)",
+    align: "العصابة",
     emoji: "🔴",
     description:
-      "Silences a player every other night, erasing their voice at Town Hall.",
+      "يبلع الفم لواحد ليلة بليلة، باش غدوة من ذاك ما يقدرش يحل فمه في 'الميري'.",
     imageFile: "silencer.png",
   },
 
-  // ── VILLAGE ─────────────────────────────────────────────────────────────────
+  // ── ولاد الحومة (VILLAGE) ───────────────────────────────────────────────────
   {
-    name: "Doctor",
-    align: "Village",
+    name: "الطبيب (Doctor)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Chooses one soul to protect each night — but never the same person twice.",
+      "يخير واحد كل ليلة باش يسلكو من الموت — بصح ما يسلكش نفس الشخص مرتين.",
     imageFile: "doctor.png",
   },
   {
-    name: "Detective",
-    align: "Village",
+    name: "لانسبيكتور (Detective)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Investigates a player each night to determine if they serve the Mafia.",
+      "يفتش على واحد كل ليلة باش يعرف إذا راهو يخدم مع العصابة ولا خاطيه.",
     imageFile: "detective.png",
   },
   {
-    name: "Vigilante",
-    align: "Village",
+    name: "المقرود (Vigilante)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Takes justice into their own hands — but shooting an innocent is fatal guilt.",
+      "يجيب حقو بيدو وييري في المشبوهين — بصح إذا غلط في واحد بريء يموت بالسم.",
     imageFile: "vigilante.png",
   },
   {
-    name: "Mayor",
-    align: "Village",
+    name: "المير (Mayor)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Reveals their identity to cast two votes — power bought with a target on their back.",
+      "يبين هويتو للناس باش يولي صوتو يسوى زوج — بصح هكا يولي هو 'السيبل' تاع العصابة.",
     imageFile: "mayor.png",
   },
   {
-    name: "Jailer",
-    align: "Village",
+    name: "الحبّاس (Jailer)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Locks a player away each night — protecting them, or executing them at will.",
+      "يبلع على واحد كل ليلة — باش يحميه من الموت، ولا 'يعدمو' إذا شك فيه.",
     imageFile: "jailer.png",
   },
   {
-    name: "Distractor",
-    align: "Village",
+    name: "المبرزي (Distractor)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Lures a player away from their duty every other night, nullifying their action.",
+      "يتلف الخيط لواحد ليلة بليلة، يخليه ينسى واش كان رايح يدير ويعطل خدمتو.",
     imageFile: "distractor.png",
   },
   {
-    name: "PI",
-    align: "Village",
+    name: "الفحصيص (PI)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Compares two players each night to determine if they share the same allegiance.",
+      "يقارن بين زوج عباد في الليل باش يعرف إذا راهم في نفس الجهة ولا لالا.",
     imageFile: "pi.png",
   },
   {
-    name: "Spy",
-    align: "Village",
+    name: "الڤمّاص (Spy)",
+    align: "الحومة",
     emoji: "🟡",
     description:
-      "Trails a target through the night — discovering who they visited.",
+      "يتبع واحد في السكات طول الليل — باش يعرف شكون اللي راح زارهم.",
     imageFile: "spy.png",
   },
 
-  // ── NEUTRAL ─────────────────────────────────────────────────────────────────
+  // ── طرف ثالث (NEUTRAL) ────────────────────────────────────────────────────
   {
-    name: "Executioner",
-    align: "Neutral",
+    name: "مول الكونترا (Executioner)",
+    align: "محايد",
     emoji: "🟣",
     description:
-      "Must manipulate the town into lynching their one specific target — or become the Jester.",
+      "لازم يغلط الحومة باش يقتلوا واحد محدد راهو حاطو في راسو — وإلا يولي بهلول.",
     imageFile: "executioner.png",
   },
   {
-    name: "Jester",
-    align: "Neutral",
+    name: "البهلول (Jester)",
+    align: "محايد",
     emoji: "🟣",
     description:
-      "Wins only by getting themselves executed — chaos is the only strategy.",
+      "يربح غير إذا خلى الحومة تفوطي عليه ويعدموه — التمنيك هو السلاح تاعو.",
     imageFile: "jester.png",
   },
   {
-    name: "Baiter",
-    align: "Neutral",
+    name: "الشيخ المقاردي (Baiter)",
+    align: "محايد",
     emoji: "🟣",
     description:
-      "Lures three visitors into a deadly trap — survival is the prize.",
+      "يجر 3 عباد للفخ تاعو ويطرطقهم بالبارود — المهم يسلك هو في الأخير.",
     imageFile: "baiter.png",
   },
   {
-    name: "Arsonist",
-    align: "Neutral",
+    name: "الشاعلي (Arsonist)",
+    align: "محايد",
     emoji: "🟣",
     description:
-      "Douses players in silence, then ignites them all in a single catastrophic night.",
+      "يرش الناس بالليسانس في السكات، ومن بعد يشعل فيهم النار قاع ضربة وحدة.",
     imageFile: "arsonist.png",
   },
 ];
@@ -361,11 +361,17 @@ module.exports = {
 
     await sleep(500);
 
-    await sendAlignmentGroup(bot, chatId, "Mafia", "🔴", "Mafia Roles");
+    await sendAlignmentGroup(bot, chatId, "العصابة", "🔴", "أدوار العصابة");
     await sleep(500);
-    await sendAlignmentGroup(bot, chatId, "Village", "🟡", "Village Roles");
+    await sendAlignmentGroup(
+      bot,
+      chatId,
+      "الحومة",
+      "🟡",
+      "أدوار ولاد الحومة",
+    );
     await sleep(500);
-    await sendAlignmentGroup(bot, chatId, "Neutral", "🟣", "Neutral Roles");
+    await sendAlignmentGroup(bot, chatId, "محايد", "🟣", "أدوار محايدة");
 
     await sleep(300);
     await bot.telegram.sendMessage(
