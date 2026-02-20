@@ -44,9 +44,7 @@ module.exports = {
     const isAllowed = ADMIN_IDS.includes(issuerId) || (issuer && issuer.isHost);
 
     if (!isAllowed) {
-      return ctx.reply(
-        "⚠️ Only the 👑 Host or an admin can force-end the game.",
-      );
+      ctx.deleteMessage().catch(() => {});
     }
 
     // Allow endgame in any phase except an empty lobby (nothing to end)

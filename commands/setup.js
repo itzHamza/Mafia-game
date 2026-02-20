@@ -240,15 +240,13 @@ module.exports = {
     const issuerId = ctx.from.id;
     const issuer = gameState.players.get(issuerId);
     if (!(issuer?.isHost || ADMIN_IDS.includes(issuerId))) {
-      return ctx.reply("⚠️ Only the 👑 <b>Host</b> can run /setup.", {
-        parse_mode: "HTML",
-      });
+      ctx.deleteMessage().catch(() => {});
     }
 
     gameState.phase = "setup";
 
     await ctx.reply(
-        `كل واحد فيكم غادي يوصلو الدور (Role) تاعو في 📨 <b>الخاص</b>.\n\n` +
+      `كل واحد فيكم غادي يوصلو الدور (Role) تاعو في 📨 <b>الخاص</b>.\n\n` +
         `⚠️ إذا مزال مابعثليش ميساج، أدخل للبروفايل تاعي وادعس على <b>Start</b>.`,
       { parse_mode: "HTML" },
     );
@@ -481,9 +479,9 @@ module.exports = {
       `🔴 Mafia: <b>${mafiaCount}</b>\n` +
       `🟢 Village: <b>${villagerCount}</b>\n` +
       `🔵 Neutral: <b>${neutralCount}</b>`;
-    
+
     await ctx.reply(
-      `✅ <b>Mafiaville راهي واجدة!</b>\n\n👥 <b>${playerCount} لاعبين</b> وزعنا عليهم الأدوار:\n${alignBreakdown}\n\n` ,
+      `✅ <b>Mafiaville راهي واجدة!</b>\n\n👥 <b>${playerCount} لاعبين</b> وزعنا عليهم الأدوار:\n${alignBreakdown}\n\n`,
       { parse_mode: "HTML" },
     );
   },

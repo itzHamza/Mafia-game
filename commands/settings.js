@@ -67,7 +67,7 @@ module.exports = {
     const isAllowed = ADMIN_IDS.includes(issuerId) || (issuer && issuer.isHost);
 
     if (!isAllowed) {
-      return ctx.reply("⚠️ Only the 👑 Host or an admin can change settings.");
+      ctx.deleteMessage().catch(() => {});
     }
 
     if (gameState.isGameActive) {

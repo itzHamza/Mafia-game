@@ -75,11 +75,11 @@ class NominationSession {
       .join("\n");
 
     return (
-      `🗳 <b>Nomination vote — Round ${this.round}</b>\n\n` +
-      `Press a button to nominate a player.\n` +
-      `You need <b>${this.threshold}</b> votes to nominate someone.\n\n` +
+      `🗳 <b>التصويت على "السيبل" — الجولة ${this.round}</b>\n\n` +
+      `اضغط على الزر باش تسيبل (تختار) الشخص اللي شاك فيه.\n` +
+      `لازمك <b>${this.threshold}</b> أصوات باش تخرج واحد للتحقيق.\n\n` +
       `${players}\n\n` +
-      `<i>You have ${this.gameState.settings.dayTime}s to discuss and vote.</i>`
+      `<i>عندكم ${this.gameState.settings.dayTime} ثانية باش تتناقشوا وتفوطيوا، ما تضيعوش الوقت!</i>`
     );
   }
 
@@ -145,10 +145,10 @@ class ExecutionSession {
       : "?";
 
     return (
-      `⚖️ <b>${nominee?.username ?? "?"} has been nominated!</b>\n\n` +
-      `${nomineeMention} has <b>${this.gameState.settings.votingTime/2}s</b> to make their case.\n\n` +
-      `✅ Guilty: <b>${yay}</b>   ❌ Innocent: <b>${nay}</b>\n\n` +
-      `<i>The nominee cannot vote for themselves.</i>`
+      `⚖️ <b>الجماعة خرجت ${nominee?.username ?? "?"} للساحة!</b>\n\n` +
+      `${nomineeMention} عندك <b>${this.gameState.settings.votingTime / 2} ثانية</b> باش تبرر روحك وتقنعنا.\n\n` +
+      `✅ مذنب (اعدموه): <b>${yay}</b>   ❌ بريء (سلكوه): <b>${nay}</b>\n\n` +
+      `<i>المتهم ما يقدرش يفوطي على روحو، باينة!</i>`
     );
   }
 
@@ -510,9 +510,9 @@ async function announceExecutionResult(bot, gameState, result) {
   await bot.telegram
     .sendMessage(
       groupChatId,
-      `🔴 <b>${nominee.username} is found guilty and executed!</b>\n\n` +
-        `<b>Guilty:</b> ${formatVoters(yayVoters)}\n` +
-        `<b>Innocent:</b> ${formatVoters(nayVoters)}`,
+      `🔴 <b>${nominee.username} طلع مذنب والحومة قررت تعدمو!</b>\n\n` +
+        `<b>لي قالوا "اعدموه":</b> ${formatVoters(yayVoters)}\n` +
+        `<b>لي قالوا "سلكوه":</b> ${formatVoters(nayVoters)}`,
       { parse_mode: "HTML" },
     )
     .catch(() => {});

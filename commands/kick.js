@@ -41,7 +41,7 @@ module.exports = {
     const isAllowed = ADMIN_IDS.includes(issuerId) || (issuer && issuer.isHost);
 
     if (!isAllowed) {
-      return ctx.reply("⚠️ Only the 👑 Host or an admin can kick players.");
+      ctx.deleteMessage().catch(() => {});
     }
 
     // ── Resolve target ────────────────────────────────────────────────────

@@ -342,9 +342,9 @@ async function dayTime(round, bot, gameState) {
   await toGroup(
     bot,
     groupChatId,
-    `⚖️ <b>The town has nominated ${nominee?.username ?? "?"}!</b>\n\n` +
-      `<a href="tg://user?id=${nomineeId}">${nominee?.username ?? "?"}</a> has ` +
-      `<b>${gameState.settings.votingTime} seconds</b> to make their case.\n\nThe execution vote will follow.`,
+    `⚖️ <b>يا ولاد الحومة، الجماعة خيرت ${nominee?.username ?? "?"}!</b>\n\n` +
+      `<a href="tg://user?id=${nomineeId}">${nominee?.username ?? "?"}</a>، عندك ` +
+      `<b>${gameState.settings.votingTime} ثانية</b> باش تدافع على روحك وتورينا براءتك.\n\nمن بعد يبدا الفوط (التصويت) تاع الصح، يا يعدموك يا يسلكوك!`,
   );
 
   await sleepAsync(gameState.settings.votingTime * 1000);
@@ -435,7 +435,7 @@ module.exports = {
       (issuer && issuer.isHost) || ADMIN_IDS.includes(issuerId);
 
     if (!isAuthorized) {
-      return ctx.reply("⚠️ Only the 👑 Host can start the game.");
+      ctx.deleteMessage().catch(() => {});
     }
 
     gameState.groupChatId = ctx.chat.id;
