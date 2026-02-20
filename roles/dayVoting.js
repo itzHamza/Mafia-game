@@ -146,7 +146,7 @@ class ExecutionSession {
 
     return (
       `⚖️ <b>${nominee?.username ?? "?"} has been nominated!</b>\n\n` +
-      `${nomineeMention} has <b>${this.gameState.settings.votingTime}s</b> to make their case.\n\n` +
+      `${nomineeMention} has <b>${this.gameState.settings.votingTime/2}s</b> to make their case.\n\n` +
       `✅ Guilty: <b>${yay}</b>   ❌ Innocent: <b>${nay}</b>\n\n` +
       `<i>The nominee cannot vote for themselves.</i>`
     );
@@ -452,7 +452,7 @@ async function runExecutionVote(bot, gameState, round, nomineeId) {
       const session = _execSession;
       _execSession = null;
       session.end(); // end() always passes `this` to the callback
-    }, gameState.settings.dayTime * 1000);
+    }, gameState.settings.votingTime * 500);
   });
 }
 
