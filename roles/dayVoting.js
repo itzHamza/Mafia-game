@@ -428,7 +428,11 @@ async function runExecutionVote(bot, gameState, round, nomineeId) {
         _execSession.buildMessageText(),
         {
           parse_mode: "HTML",
-          reply_markup: _buildExecKeyboard(round, nomineeId),
+          reply_markup: _buildExecKeyboard(
+            round,
+            nomineeId,
+            gameState.sessionId,
+          ),
         },
       );
       _execSession.messageId = sent.message_id;
